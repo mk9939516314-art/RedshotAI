@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Redshot</string>
+    <string name="accessibility_description">Redshot ko phone chalane deta hai: apps kholna, tap karna, type karna, navigation. Bina iske Redshot sirf baat kar payega.</string>
+</resources>
