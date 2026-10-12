@@ -11,8 +11,10 @@ android {
         applicationId = "app.redshot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        // Only 64-bit phones (all modern ones); keeps the app small.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     // One fixed key so every new build installs over the old one (permissions stay).
@@ -39,4 +41,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
+}
+
+dependencies {
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+    implementation("com.alphacephei:vosk-android:0.3.47")
 }

@@ -6,16 +6,17 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONObject
 
 /**
  * One-time setup screen. After setup Redshot never shows a screen: it runs in the background.
@@ -24,6 +25,10 @@ class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private val steps = ArrayList<Pair<TextView, () -> Boolean>>()
+    private val main = Handler(Looper.getMainLooper())
+    private val refresher = object : Runnable {
+        override fun run() { refresh(); main.postDelayed(this, 1500) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,14 +38,12 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#0B0B0F"))
             setPadding(48, 96, 48, 48)
         }
-        val scroll = ScrollView(this).apply { addView(root) }
-        setContentView(scroll)
+        setContentView(ScrollView(this).apply { addView(root) })
 
         root.addView(text("REDSHOT", 28f, "#FF2D2D", true))
-        root.addView(text("Ek baar ye 5 cheezein on kar de, phir ye screen dobara nahi aayegi.", 14f, "#BBBBBB", false))
-        status = text("", 14f, "#FFFFFF", false)
+        root.addView(text("Ek baar ye 3 cheezein on kar de. Uske baad ye screen dobara nahi aayegi.", 14f, "#BBBBBB", false))
 
-        addStep(root, "1. Mic permission",
+        addStep(root, "1. Mic (kaan)",
             { checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED }) {
             requestPermissions(
                 arrayOf(
@@ -50,37 +53,61 @@ class MainActivity : Activity() {
                 ), 1
             )
         }
-        addStep(root, "2. Accessibility (haath: apps kholna, tap, type)", { accessibilityOn() }) {
+        addStep(root, "2. Accessibility (haath: background se apps kholna)", { accessibilityOn() }) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
-        addStep(root, "3. Display over other apps", { Settings.canDrawOverlays(this) }) {
-            startActivity(
-                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-            )
-        }
-        addStep(root, "4. Battery: Unrestricted", {
+        addStep(root, "3. Battery: Unrestricted (taaki band na ho)", {
             (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
         }) {
             startActivity(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
             )
         }
-        addStep(root, "5. Redshot chalu kar", { false }) {
-            startForegroundService(Intent(this, RedshotService::class.java))
-            status.text = "Redshot chalu hai. Ab bol kuch bhi."
-        }
 
+        status = text("", 14f, "#FFFFFF", false)
         root.addView(status)
+
+        val check = Button(this).apply {
+            text = "Brain check"
+            setOnClickListener { brainCheck() }
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = Gravity.START
+        root.addView(check, lp)
+
         root.addView(text("Device: " + Config.deviceId(this).take(8), 12f, "#666666", false))
     }
 
     override fun onResume() {
         super.onResume()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            try { startForegroundService(Intent(this, RedshotService::class.java)) } catch (e: Exception) {}
+        }
+        main.post(refresher)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        main.removeCallbacks(refresher)
+    }
+
+    private fun refresh() {
         for ((label, ok) in steps) {
             val base = label.text.toString().removePrefix("✅ ").removePrefix("❌ ")
             label.text = (if (ok()) "✅ " else "❌ ") + base
         }
-        status.text = if (Config.brainUrl(this).contains("REPLACE_BRAIN_URL")) "Brain ka address set nahi hai." else ""
+        val brain = if (Config.brainUrl(this).contains("REPLACE_BRAIN_URL")) "Brain: address set nahi" else "Brain: " + Config.brainUrl(this)
+        status.text = "Kaan: " + RedshotService.state + "\n" + brain
+    }
+
+    private fun brainCheck() {
+        status.text = "Brain check ho raha hai..."
+        Thread {
+            val r = Brain.post(this, "device/ping", JSONObject().put("hello", "redshot"), 15000)
+            main.post {
+                status.text = if (r != null) "Brain OK: " + r.optString("say", "ok") else "Brain tak nahi pahunch paya"
+            }
+        }.start()
     }
 
     private fun accessibilityOn(): Boolean {
@@ -109,6 +136,5 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor(color))
             if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, 24, 0, 8)
-            visibility = View.VISIBLE
         }
 }

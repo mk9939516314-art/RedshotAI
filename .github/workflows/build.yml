@@ -23,6 +23,22 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Cache speech model
+        id: modelcache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/model-hi
+          key: vosk-model-small-hi-0.22
+
+      - name: Download offline speech model (Hindi)
+        if: steps.modelcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/src/main/assets tmpmodel
+          curl -L --fail --retry 3 -o hi.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+          unzip -q hi.zip -d tmpmodel
+          mv tmpmodel/vosk-model-small-hi-0.22 app/src/main/assets/model-hi
+          ls -la app/src/main/assets/model-hi
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
@@ -37,7 +53,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.${{ github.run_number }}
+          tag_name: v0.2.${{ github.run_number }}
           name: Redshot build ${{ github.run_number }}
           files: redshot.apk
           make_latest: true
