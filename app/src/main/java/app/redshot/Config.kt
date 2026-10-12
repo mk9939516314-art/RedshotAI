@@ -6,7 +6,7 @@ import java.util.UUID
 
 object Config {
     // Brain (Floot) address. Updated by the build when the brain is published.
-    const val DEFAULT_BRAIN_URL = "https://REPLACE_BRAIN_URL"
+    const val DEFAULT_BRAIN_URL = "https://redshot-brain.floot.app"
 
     private fun prefs(c: Context) = c.getSharedPreferences("redshot", Context.MODE_PRIVATE)
 
