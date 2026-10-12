@@ -27,7 +27,7 @@ class MainActivity : Activity() {
     private val steps = ArrayList<Pair<TextView, () -> Boolean>>()
     private val main = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
-        override fun run() { refresh(); main.postDelayed(this, 1500) }
+        override fun run() { refresh(); main.postDelayed(this, 400) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,7 +97,12 @@ class MainActivity : Activity() {
             label.text = (if (ok()) "✅ " else "❌ ") + base
         }
         val brain = if (Config.brainUrl(this).contains("REPLACE_BRAIN_URL")) "Brain: address set nahi" else "Brain: " + Config.brainUrl(this)
-        status.text = "Kaan: " + RedshotService.state + "\n" + brain
+        status.text = "Kaan: " + RedshotService.state +
+            "\nAwaaz level: " + RedshotService.level + " (trigger: " + RedshotService.threshold + ")" +
+            "\nSuna: " + RedshotService.heard +
+            "\nRasta: " + RedshotService.route +
+            "\nKaam: " + RedshotService.lastAction +
+            "\n" + brain
     }
 
     private fun brainCheck() {

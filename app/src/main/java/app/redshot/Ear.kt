@@ -33,8 +33,10 @@ class Ear(
     @Volatile var paused = false
     private var thread: Thread? = null
 
+    val running: Boolean get() = thread?.isAlive == true
+
     fun start() {
-        if (alive) return
+        if (running) return
         alive = true
         thread = Thread { loop() }.also { it.name = "redshot-ear"; it.start() }
     }
@@ -56,11 +58,11 @@ class Ear(
 
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION, SR,
+            MediaRecorder.AudioSource.MIC, SR,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, FRAME * 2 * 8)
         )
-        if (audio.state != AudioRecord.STATE_INITIALIZED) { onState("mic nahi khula"); return }
+        if (audio.state != AudioRecord.STATE_INITIALIZED) { onState("mic nahi khula (permission?)"); audio.release(); return }
         audio.startRecording()
         onState("sun raha hoon")
 
@@ -90,7 +92,9 @@ class Ear(
                 }
 
                 val rms = rms(buf)
-                val threshold = maxOf(floor * 3.0, 420.0)
+                val threshold = maxOf(floor * 2.5, 220.0)
+                RedshotService.level = rms.toInt()
+                RedshotService.threshold = threshold.toInt()
                 val loud = rms > threshold
 
                 if (!speaking) {
@@ -129,6 +133,7 @@ class Ear(
 
     private fun emit(json: String) {
         val text = try { JSONObject(json).optString("text", "").trim() } catch (e: Exception) { "" }
+        RedshotService.heard = text
         if (text.length >= 3) onText(text)
     }
 

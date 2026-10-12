@@ -23,6 +23,11 @@ class RedshotService : Service() {
 
     companion object {
         @Volatile var state: String = "band"
+        @Volatile var level: Int = 0
+        @Volatile var threshold: Int = 0
+        @Volatile var heard: String = ""
+        @Volatile var route: String = ""
+        @Volatile var lastAction: String = ""
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -44,10 +49,16 @@ class RedshotService : Service() {
             .setContentText("Sun raha hoon")
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(1, n)
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(1, n)
+            }
+        } catch (e: Exception) {
+            state = "service start fail: " + e.javaClass.simpleName
+            stopSelf()
+            return
         }
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -64,7 +75,8 @@ class RedshotService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (ear == null) {
+        if (ear == null || ear?.running == false) {
+            ear?.stop()
             ear = Ear(this, { text -> handleUtterance(text) }, { s -> state = s }).also { it.start() }
         }
         return START_STICKY
@@ -80,7 +92,8 @@ class RedshotService : Service() {
 
     private fun handleUtterance(text: String) {
         // Fast lane first: handled on the phone, no internet, near-instant.
-        if (Router.handle(this, text)) return
+        if (Router.handle(this, text)) { route = "phone ne turant kiya"; return }
+        route = "brain ko bheja..."
 
         // Everything else: the brain decides if it was meant for Redshot and what to do.
         io.execute {
@@ -88,7 +101,9 @@ class RedshotService : Service() {
                 .put("text", text)
                 .put("ts", System.currentTimeMillis())
                 .put("pkg", RedshotAccess.currentPackage)
-            val res = Brain.post(this, "device/hear", body) ?: return@execute
+            val res = Brain.post(this, "device/hear", body)
+            if (res == null) { route = "brain fail: " + Brain.lastError; return@execute }
+            route = if (res.optString("say").isBlank() && res.optJSONArray("actions") == null) "brain: mujhse nahi tha" else "brain ne jawab diya"
             main.post { apply(res) }
         }
     }
@@ -105,7 +120,8 @@ class RedshotService : Service() {
         if (acts != null) {
             for (i in 0 until acts.length()) {
                 val a = acts.optJSONObject(i) ?: continue
-                Executor.run(this, a)
+                val note = Executor.run(this, a)
+                lastAction = a.optString("type") + (if (note != null) " -> " + note else " ok")
             }
         }
         val say = res.optString("say", "")

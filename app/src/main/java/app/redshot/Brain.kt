@@ -6,6 +6,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object Brain {
+    @Volatile var lastError: String = ""
+
     /** POST JSON to the brain. Returns parsed JSON, or null on any failure. Call off the main thread. */
     fun post(ctx: Context, path: String, body: JSONObject, readTimeoutMs: Int = 30000): JSONObject? {
         return try {
@@ -24,8 +26,10 @@ object Brain {
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             c.disconnect()
-            if (code in 200..299 && text.isNotBlank()) JSONObject(text) else null
+            if (code in 200..299 && text.isNotBlank()) { lastError = ""; JSONObject(text) }
+            else { lastError = "HTTP $code"; null }
         } catch (e: Exception) {
+            lastError = e.javaClass.simpleName + ": " + (e.message ?: "")
             null
         }
     }
