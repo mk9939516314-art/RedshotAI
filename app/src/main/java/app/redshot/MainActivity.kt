@@ -41,7 +41,7 @@ class MainActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(root) })
 
         root.addView(text("REDSHOT", 28f, "#FF2D2D", true))
-        root.addView(text("Ek baar ye 3 cheezein on kar de. Uske baad ye screen dobara nahi aayegi.", 14f, "#BBBBBB", false))
+        root.addView(text("Ek baar ye 3 cheezein on kar de. Uske baad ye screen dobara nahi aayegi.\n\nBolna: \"Redshot, mummy ko call laga\" / \"Redshot, chrome khol\" / \"Redshot, song play kar\" / \"Redshot, kuch dikkat ho gayi\". Chup karane ke liye: \"Redshot chup ho ja\", jagane ke liye: \"jaag ja\".", 14f, "#BBBBBB", false))
 
         addStep(root, "1. Mic (kaan)",
             { checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED }) {

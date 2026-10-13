@@ -52,6 +52,72 @@ object Router {
 
     private fun hasAny(ws: List<String>, list: List<String>) = ws.any { it in list }
 
+
+    private fun act(ctx: Context, say: (String, String) -> Unit, a: JSONObject) {
+        val note = Executor.run(ctx, a)
+        if (note != null) say("भाई, ये नहीं हो पाया। $note", "hi-IN")
+    }
+
+    private val callWords = listOf("call", "कॉल", "काल", "कोल", "dial", "डायल")
+    private val particles = listOf(
+        "ko", "को", "se", "से", "ka", "का", "ki", "की", "ke", "के", "laga", "lagao", "lagana", "लगा", "लगाओ", "लगाना",
+        "kar", "karo", "कर", "करो", "de", "दे", "dena", "देना", "please", "plz", "ek", "एक", "zara", "जरा", "ज़रा",
+        "jaldi", "जल्दी", "phone", "bhai", "भाई", "yaar", "यार", "mujhe", "मुझे", "hai", "है", "na", "ना", "abhi", "अभी",
+        "wo", "वो", "aur", "और", "baat", "बात", "karwa", "करवा", "karna", "करना", "number", "नंबर", "mera", "मेरा", "meri", "मेरी",
+        "sunn", "sun", "सुन", "suno", "सुनो", "ab", "अब", "chal", "चल", "ji", "जी", "me", "mein", "में", "par", "pe", "पर", "पे", "on", "kisi", "किसी"
+    )
+    private val digitWords = mapOf(
+        "zero" to '0', "ज़ीरो" to '0', "जीरो" to '0', "शून्य" to '0', "ek" to '1', "एक" to '1', "do" to '2', "दो" to '2',
+        "teen" to '3', "तीन" to '3', "char" to '4', "chaar" to '4', "चार" to '4', "paanch" to '5', "panch" to '5', "पांच" to '5', "पाँच" to '5',
+        "chhe" to '6', "chah" to '6', "छह" to '6', "छः" to '6', "छे" to '6', "saat" to '7', "सात" to '7', "aath" to '8', "आठ" to '8',
+        "nau" to '9', "नौ" to '9'
+    )
+    private val playWords = listOf(
+        "play", "chala", "chalao", "चला", "चलाओ", "baja", "bajao", "बजा", "बजाओ", "suna", "sunao", "सुना", "सुनाओ",
+        "laga", "lagao", "लगा", "लगाओ", "sunna", "सुनना", "chalana", "चलाना"
+    )
+    private val songNouns = listOf(
+        "gaana", "gana", "gaane", "gane", "song", "songs", "music", "गाना", "गाने", "गीत", "संगीत", "म्यूजिक", "सॉन्ग", "सोंग", "गाणा"
+    )
+    private val playStop = particles + playWords + songNouns + listOf(
+        "wala", "wali", "vala", "वाला", "वाली", "koi", "kuch", "कोई", "कुछ", "achha", "accha", "अच्छा", "spotify", "youtube",
+        "saavn", "jiosaavn", "ki", "की", "mere", "मेरे", "pasand", "पसंद", "ka", "का", "chalu", "चालू"
+    )
+
+    private fun tryCall(ctx: Context, ws: List<String>, say: (String, String) -> Unit): Boolean {
+        val hasCall = hasAny(ws, callWords) || ("phone" in ws && hasAny(ws, listOf("laga", "lagao", "लगा", "लगाओ", "kar", "कर")))
+        if (!hasCall) return false
+        val digits = StringBuilder()
+        for (w in ws) {
+            if (w.all { it.isDigit() }) digits.append(w)
+            else digitWords[w]?.let { digits.append(it) }
+        }
+        if (digits.length >= 7) {
+            act(ctx, say, JSONObject().put("type", "call").put("number", digits.toString()))
+            return true
+        }
+        val name = ws.filter { it !in callWords && it !in particles }.joinToString(" ").trim()
+        if (name.isEmpty()) return false
+        act(ctx, say, JSONObject().put("type", "call_contact").put("contact", name))
+        return true
+    }
+
+    private fun tryPlay(ctx: Context, ws: List<String>, say: (String, String) -> Unit): Boolean {
+        val noun = hasAny(ws, songNouns)
+        val verb = hasAny(ws, playWords)
+        if (!(verb && (noun || "play" in ws))) return false
+        val query = ws.filter { it !in playStop }.joinToString(" ").trim()
+        val app = when {
+            "spotify" in ws -> "Spotify"
+            "youtube" in ws && "music" in ws -> "YouTube Music"
+            "youtube" in ws -> "YouTube"
+            "saavn" in ws || "jiosaavn" in ws -> "JioSaavn"
+            else -> ""
+        }
+        act(ctx, say, JSONObject().put("type", "play").put("query", query).put("app", app))
+        return true
+    }
+
     private fun num(w: String): Int? = w.toIntOrNull() ?: numberWords[w]
 
     fun isUnmute(raw: String): Boolean {
@@ -99,7 +165,7 @@ object Router {
         if ("torch" in ws || "flashlight" in ws || ("flash" in ws && "light" in ws)) {
             val on = hasAny(ws, onWords)
             val off = hasAny(ws, offWords)
-            Executor.run(ctx, JSONObject().put("type", "torch").apply {
+            act(ctx, say, JSONObject().put("type", "torch").apply {
                 if (on && !off) put("on", true) else if (off && !on) put("on", false)
             })
             return true
@@ -110,7 +176,7 @@ object Router {
             val up = hasAny(ws, upWords)
             val down = hasAny(ws, downWords)
             if (up || down) {
-                Executor.run(ctx, JSONObject().put("type", "volume").put("dir", if (up) "up" else "down"))
+                act(ctx, say, JSONObject().put("type", "volume").put("dir", if (up) "up" else "down"))
                 return true
             }
         }
@@ -152,12 +218,15 @@ object Router {
                 }
             }
             if (total > 0) {
-                Executor.run(ctx, JSONObject().put("type", "timer").put("seconds", total).put("label", "Redshot"))
+                act(ctx, say, JSONObject().put("type", "timer").put("seconds", total).put("label", "Redshot"))
                 say("ठीक है, " + parts.joinToString(" ") + " का टाइमर लगा दिया।", "hi-IN")
                 return true
             }
             return false // unclear length -> let the brain ask / decide
         }
+
+        if (tryCall(ctx, ws, say)) return true
+        if (tryPlay(ctx, ws, say)) return true
 
         // media controls (short sentences only, "play <song name>" goes to the brain)
         if (ws.size <= 4) {
@@ -165,13 +234,12 @@ object Router {
             val media = when {
                 "pause" in ws || (musicNoun && hasAny(ws, offWords)) -> "pause"
                 ws.size == 1 && (ws[0] == "play" || ws[0] == "resume") -> "play"
-                musicNoun && hasAny(ws, listOf("chalao", "chala", "play", "चलाओ", "चला")) -> "play"
                 hasAny(ws, listOf("next", "agla", "अगला", "skip")) -> "next"
                 hasAny(ws, listOf("previous", "prev", "pichla", "पिछला")) -> "previous"
                 else -> null
             }
             if (media != null) {
-                Executor.run(ctx, JSONObject().put("type", "media").put("name", media))
+                act(ctx, say, JSONObject().put("type", "media").put("name", media))
                 return true
             }
         }
@@ -181,23 +249,23 @@ object Router {
         val upW = listOf("up", "upar", "ऊपर", "उपर")
         if (("scroll" in ws && ws.size <= 5) || (ws.size == 1 && (ws[0] in downW || ws[0] in upW))) {
             val dir = if (hasAny(ws, upW)) "up" else "down"
-            Executor.run(ctx, JSONObject().put("type", "scroll").put("dir", dir))
+            act(ctx, say, JSONObject().put("type", "scroll").put("dir", dir))
             return true
         }
 
         // screen utilities
         if ("screenshot" in ws && ws.size <= 5) {
-            Executor.run(ctx, JSONObject().put("type", "global").put("name", "screenshot"))
+            act(ctx, say, JSONObject().put("type", "global").put("name", "screenshot"))
             return true
         }
         if ("notification" in ws || "notifications" in ws) {
             if (ws.size <= 5) {
-                Executor.run(ctx, JSONObject().put("type", "global").put("name", "notifications"))
+                act(ctx, say, JSONObject().put("type", "global").put("name", "notifications"))
                 return true
             }
         }
         if ("lock" in ws && ("phone" in ws || "screen" in ws || ws.size <= 2)) {
-            Executor.run(ctx, JSONObject().put("type", "global").put("name", "lock"))
+            act(ctx, say, JSONObject().put("type", "global").put("name", "lock"))
             return true
         }
 
@@ -209,7 +277,7 @@ object Router {
             else -> null
         }
         if (page != null && ws.size <= 5 && (hasAny(ws, openWords) || "settings" in ws || hasAny(ws, onWords) || hasAny(ws, offWords))) {
-            Executor.run(ctx, JSONObject().put("type", "settings").put("name", page))
+            act(ctx, say, JSONObject().put("type", "settings").put("name", page))
             if (hasAny(ws, onWords) || hasAny(ws, offWords)) {
                 say("Android ab ye khud on-off nahi karne deta, इसलिए settings खोल दी है, वहाँ से कर ले।", "hi-IN")
             }
@@ -225,7 +293,7 @@ object Router {
                 else -> null
             }
             if (nav != null) {
-                Executor.run(ctx, JSONObject().put("type", "global").put("name", nav))
+                act(ctx, say, JSONObject().put("type", "global").put("name", nav))
                 return true
             }
         }

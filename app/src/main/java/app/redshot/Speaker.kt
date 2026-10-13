@@ -65,6 +65,36 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
         }
     }
 
+    /** Download short stock phrases once (when online) so they play instantly and offline later. */
+    fun prefetch(phrases: List<Pair<String, String>>) {
+        pool.execute {
+            for ((text, lang) in phrases) {
+                try {
+                    if (!cloudOk) return@execute
+                    val f = cacheFile(text, lang)
+                    if (f.exists() && f.length() > 2000) continue
+                    val c = URL(Config.brainUrl(ctx).trimEnd('/') + "/_api/device/speak").openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.connectTimeout = 6000
+                    c.readTimeout = 15000
+                    c.doOutput = true
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.setRequestProperty("X-Device-Id", Config.deviceId(ctx))
+                    c.setRequestProperty("X-Device-Secret", Config.deviceSecret(ctx))
+                    c.setRequestProperty("X-Device-Name", Config.deviceName())
+                    c.outputStream.use { it.write(JSONObject().put("text", text).put("lang", lang).toString().toByteArray(Charsets.UTF_8)) }
+                    val code = c.responseCode
+                    if (code == 501) { cloudOk = false; cloudOffAt = System.currentTimeMillis(); return@execute }
+                    if (code !in 200..299) continue
+                    val bytes = c.inputStream.use { it.readBytes() }
+                    if (bytes.size > 2000) f.writeBytes(bytes)
+                } catch (e: Exception) {
+                    return@execute
+                }
+            }
+        }
+    }
+
     fun shutdown() {
         tts?.shutdown()
         pool.shutdownNow()

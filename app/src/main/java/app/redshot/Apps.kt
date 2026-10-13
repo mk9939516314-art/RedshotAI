@@ -73,7 +73,7 @@ object Apps {
         return sb.toString()
     }
 
-    private fun dist(a: String, b: String): Int {
+    fun dist(a: String, b: String): Int {
         val d = IntArray(b.length + 1) { it }
         for (i in 1..a.length) {
             var prev = d[0]

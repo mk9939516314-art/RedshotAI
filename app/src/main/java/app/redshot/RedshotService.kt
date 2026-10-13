@@ -39,6 +39,7 @@ class RedshotService : Service() {
     private var announcedPending = false
 
     @Volatile private var lastReplyAt = 0L
+    @Volatile private var windowUntil = 0L
     @Volatile private var lastText = ""
     @Volatile private var lastTextAt = 0L
     @Volatile private var lastOfflineNoticeAt = 0L
@@ -67,6 +68,12 @@ class RedshotService : Service() {
             return
         }
         speaker = Speaker(this) { busy -> ear?.setPaused(busy) }
+        speaker?.prefetch(acks.map { it to "hi-IN" } + listOf(
+            filler to "hi-IN",
+            "इंटरनेट नहीं है भाई, अभी बस फोन वाले कमांड चलेंगे।" to "hi-IN",
+            "दिमाग तक बात देर से पहुँच रही है, एक बार फिर बोल।" to "hi-IN",
+            "हाँ भाई, बोल।" to "hi-IN"
+        ))
         // keep the brain warm so the first reply is as fast as the rest
         keepAlive.scheduleWithFixedDelay({
             try { if (!muted) Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000) } catch (e: Exception) {}
@@ -94,44 +101,72 @@ class RedshotService : Service() {
 
     // ---------- one spoken sentence ----------
 
+    private val acks = listOf("हाँ भाई, बोल।", "हाँ, बता।", "जी, बोलो।", "हाँ भाई, सुन रहा हूँ।")
+    private val filler = "हम्म, एक सेकंड..."
+
     private fun onHeard(text: String, pcm: ShortArray) {
         val now = System.currentTimeMillis()
         if (text.isNotEmpty() && text == lastText && now - lastTextAt < 3000) return
         lastText = text
         lastTextAt = now
-        heard = if (text.isEmpty()) "(phone ne samjha nahi, brain ko audio bheja)" else text
+        heard = if (text.isEmpty()) "(kuch samajh nahi aaya)" else text
+        if (text.isBlank()) return
 
         // Phone commands never wait behind a slow brain call: they have their own lane.
         fast.execute {
-            val handled = try {
-                Router.handle(
-                    this, text, muted,
-                    { s, lang -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" },
-                    { m -> muted = m }
-                )
-            } catch (e: Exception) { false }
+            val say = { s: String, lang: String -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" }
+            val setMuted = { m: Boolean -> muted = m }
+
+            // while muted, only the wake-up phrase counts (no "Redshot" needed)
+            if (muted) {
+                Router.handle(this, text, true, say, setMuted)
+                route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "wapas sun raha hoon"
+                return@execute
+            }
+
+            // Only act when "Redshot" was said, or we are in the middle of a conversation.
+            val stripped = Wake.strip(text)
+            val inWindow = now < windowUntil
+            if (stripped == null && !inWindow) { route = "Redshot naam nahi suna, ignore kiya"; return@execute }
+            val cmd = (stripped ?: text).trim()
+
+            if (cmd.isEmpty()) {
+                windowUntil = now + 10_000
+                route = "Redshot suna, jawab diya"
+                say(acks[(now % acks.size).toInt()], "hi-IN")
+                return@execute
+            }
+
+            val handled = try { Router.handle(this, cmd, false, say, setMuted) } catch (e: Exception) { false }
             if (handled) {
-                if (!muted) lastReplyAt = System.currentTimeMillis()
+                windowUntil = System.currentTimeMillis() + 8_000
+                lastReplyAt = System.currentTimeMillis()
                 route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
-            } else if (!muted) {
+            } else {
                 io.execute {
                     if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
-                    askBrain(text, pcm)
+                    askBrain(cmd)
                 }
             }
         }
     }
 
-    private fun askBrain(text: String, pcm: ShortArray) {
+    private fun askBrain(text: String) {
         route = "brain ko bheja..."
         val body = JSONObject()
             .put("ts", System.currentTimeMillis())
             .put("pkg", RedshotAccess.currentPackage)
-            .put("audio", Audio.wavBase64(pcm))
-        if (text.isNotBlank()) body.put("text", text)
+            .put("text", text)
+            .put("wake", true)
+
+        // if the brain takes a moment, say something short so it never feels dead
+        val waiting = keepAlive.schedule(Runnable {
+            speaker?.say(filler, "hi-IN")
+        }, 1700, java.util.concurrent.TimeUnit.MILLISECONDS)
 
         val t0 = System.currentTimeMillis()
         val res = Brain.post(this, "device/hear", body, 14000)
+        waiting.cancel(false)
         if (res == null) {
             route = "brain fail: " + Brain.lastError
             offlineNotice(Brain.lastError)
@@ -143,8 +178,7 @@ class RedshotService : Service() {
 
     private fun offlineNotice(err: String) {
         val now = System.currentTimeMillis()
-        val inConversation = now - lastReplyAt < CONVERSATION_MS
-        if (!inConversation || now - lastOfflineNoticeAt < 30_000) return
+        if (now - lastOfflineNoticeAt < 8_000) return
         lastOfflineNoticeAt = now
         val noNet = err.contains("UnknownHost") || err.contains("ConnectException") || err.contains("Unreachable")
         speaker?.say(
@@ -180,7 +214,8 @@ class RedshotService : Service() {
             }
         }
         lastReplyAt = System.currentTimeMillis()
-        route = "brain ne jawab diya"
+        windowUntil = lastReplyAt + (if (say.isNotBlank()) 25_000L else 8_000L)
+        route = route + " (jawab mila)"
 
         if (failure != null) {
             // never claim success for something that did not happen

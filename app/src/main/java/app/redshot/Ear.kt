@@ -26,7 +26,7 @@ class Ear(
         private const val FRAME = 320          // 20 ms
         private const val PREROLL_FRAMES = 15  // 300 ms kept from before speech was detected
         private const val START_FRAMES = 2     // loud frames in a row to start
-        private const val END_FRAMES = 22      // 440 ms of quiet ends the sentence
+        private const val END_FRAMES = 17      // 340 ms of quiet ends the sentence
         private const val MIN_FRAMES = 14      // shorter than ~280 ms is a click, not speech
         private const val MAX_FRAMES = 750     // 15 s hard cap per sentence
     }

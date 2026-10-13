@@ -171,18 +171,42 @@ object Executor {
     // ---------- play / call ----------
 
     private fun play(ctx: Context, query: String, app: String): String? {
-        if (query.isBlank()) return "kya chalana hai?"
-        val pkg = Apps.findByName(ctx, app)?.pkg
-        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
-            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
-            .putExtra(android.app.SearchManager.QUERY, query)
-        if (pkg != null) i.setPackage(pkg)
-        return try {
-            startBg(ctx, i); null
-        } catch (e: ActivityNotFoundException) {
-            startBg(ctx, Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(query))))
-            null
+        if (query.isBlank()) {
+            // "song play kar": resume what was playing; if nothing starts, put on some music
+            media(ctx, "play")
+            Thread {
+                try {
+                    Thread.sleep(1000)
+                    val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    if (!am.isMusicActive) playSearch(ctx, "latest hindi songs", app)
+                } catch (e: Exception) {}
+            }.start()
+            return null
         }
+        return playSearch(ctx, query, app)
+    }
+
+    private fun playSearch(ctx: Context, query: String, app: String): String? {
+        val installed = Apps.list(ctx).map { it.pkg }.toSet()
+        val wanted = Apps.findByName(ctx, app)?.pkg
+        val order = if (wanted != null) listOf(wanted)
+        else listOf("com.spotify.music", "com.google.android.apps.youtube.music").filter { it in installed }
+
+        for (pkg in order) {
+            if (pkg == "com.google.android.youtube") break
+            try {
+                val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                    .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                    .putExtra(android.app.SearchManager.QUERY, query)
+                    .setPackage(pkg)
+                startBg(ctx, i)
+                return null
+            } catch (e: ActivityNotFoundException) { /* try next */ }
+        }
+        val url = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(query)))
+        if ("com.google.android.youtube" in installed) url.setPackage("com.google.android.youtube")
+        startBg(ctx, url)
+        return null
     }
 
     private val family = mapOf(
@@ -201,6 +225,7 @@ object Executor {
             add(want)
             for ((_, group) in family) if (group.any { Apps.norm(it) == want }) group.forEach { add(Apps.norm(it)) }
         }
+        val spokenSkel = Apps.skel(name)
         var bestNum: String? = null
         var bestScore = 0
         ctx.contentResolver.query(
@@ -216,6 +241,8 @@ object Executor {
                 val num = c.getString(1) ?: continue
                 if (n.isEmpty()) continue
                 var score = 0
+                val sk = Apps.skel(c.getString(0) ?: "")
+                if (sk.length >= 3 && sk == spokenSkel) score = 55
                 for (k in keys) {
                     if (n == k) score = maxOf(score, 100)
                     else if (n.startsWith(k)) score = maxOf(score, 80)
