@@ -31,7 +31,8 @@ class RedshotService : Service() {
         private const val STALE_MS = 20_000L
     }
 
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = Executors.newFixedThreadPool(2)
+    private val fast = Executors.newSingleThreadExecutor()
     private val keepAlive = Executors.newSingleThreadScheduledExecutor()
     private var ear: Ear? = null
     private var speaker: Speaker? = null
@@ -86,6 +87,7 @@ class RedshotService : Service() {
         state = "band"
         speaker?.shutdown()
         io.shutdownNow()
+        fast.shutdownNow()
         keepAlive.shutdownNow()
         super.onDestroy()
     }
@@ -99,29 +101,28 @@ class RedshotService : Service() {
         lastTextAt = now
         heard = if (text.isEmpty()) "(phone ne samjha nahi, brain ko audio bheja)" else text
 
-        io.execute {
-            if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
-            process(text, pcm)
+        // Phone commands never wait behind a slow brain call: they have their own lane.
+        fast.execute {
+            val handled = try {
+                Router.handle(
+                    this, text, muted,
+                    { s, lang -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" },
+                    { m -> muted = m }
+                )
+            } catch (e: Exception) { false }
+            if (handled) {
+                if (!muted) lastReplyAt = System.currentTimeMillis()
+                route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
+            } else if (!muted) {
+                io.execute {
+                    if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
+                    askBrain(text, pcm)
+                }
+            }
         }
     }
 
-    private fun process(text: String, pcm: ShortArray) {
-        // 1) fast lane: handled on the phone, no internet
-        val handled = try {
-            Router.handle(
-                this, text, muted,
-                { s, lang -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" },
-                { m -> muted = m }
-            )
-        } catch (e: Exception) { false }
-        if (handled) {
-            if (!muted) lastReplyAt = System.currentTimeMillis()
-            route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
-            return
-        }
-        if (muted) return
-
-        // 2) brain: it hears the raw audio itself (any language) and decides if it was meant for Redshot
+    private fun askBrain(text: String, pcm: ShortArray) {
         route = "brain ko bheja..."
         val body = JSONObject()
             .put("ts", System.currentTimeMillis())
@@ -129,22 +130,28 @@ class RedshotService : Service() {
             .put("audio", Audio.wavBase64(pcm))
         if (text.isNotBlank()) body.put("text", text)
 
-        val res = Brain.post(this, "device/hear", body, 15000)
+        val t0 = System.currentTimeMillis()
+        val res = Brain.post(this, "device/hear", body, 14000)
         if (res == null) {
             route = "brain fail: " + Brain.lastError
-            offlineNotice()
+            offlineNotice(Brain.lastError)
             return
         }
+        route = "brain: " + (System.currentTimeMillis() - t0) + "ms"
         apply(res)
     }
 
-    private fun offlineNotice() {
+    private fun offlineNotice(err: String) {
         val now = System.currentTimeMillis()
         val inConversation = now - lastReplyAt < CONVERSATION_MS
-        if (inConversation && now - lastOfflineNoticeAt > 60_000) {
-            lastOfflineNoticeAt = now
-            speaker?.say("इंटरनेट नहीं है भाई, अभी बस फोन वाले कमांड चलेंगे।", "hi-IN")
-        }
+        if (!inConversation || now - lastOfflineNoticeAt < 30_000) return
+        lastOfflineNoticeAt = now
+        val noNet = err.contains("UnknownHost") || err.contains("ConnectException") || err.contains("Unreachable")
+        speaker?.say(
+            if (noNet) "इंटरनेट नहीं है भाई, अभी बस फोन वाले कमांड चलेंगे।"
+            else "दिमाग तक बात देर से पहुँच रही है, एक बार फिर बोल।",
+            "hi-IN"
+        )
     }
 
     private fun apply(res: JSONObject) {

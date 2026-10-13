@@ -232,7 +232,7 @@ object Router {
 
         // open an app
         if (hasAny(ws, openWords) && ws.size <= 7) {
-            val app = Apps.findIn(ctx, t)
+            val app = Apps.findIn(ctx, t) ?: Apps.findSoundAlike(ctx, ws.filter { it !in openWords })
             if (app != null && Apps.launch(ctx, app)) return true
         }
         return false
