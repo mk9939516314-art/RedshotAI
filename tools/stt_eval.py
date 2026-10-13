@@ -50,18 +50,28 @@ def wake(text):
         if i+1 < len(ws) and m(skel(w+ws[i+1])): return True
     return False
 
-async def synth():
-    import edge_tts
+def tts_one(text, mp3, wav):
+    lang = "en" if text.isascii() else "hi"
+    try:
+        from gtts import gTTS
+        gTTS(text, lang=lang).save(mp3)
+        subprocess.run(["ffmpeg","-y","-loglevel","error","-i",mp3,"-ar","16000","-ac","1",wav], check=True)
+        return "gtts"
+    except Exception as e:
+        print("gtts failed:", repr(e)[:120])
+    v = "en" if lang == "en" else "hi"
+    subprocess.run(["espeak-ng","-v",v,"-s","150","-w","audio/_e.wav",text], check=True)
+    subprocess.run(["ffmpeg","-y","-loglevel","error","-i","audio/_e.wav","-ar","16000","-ac","1",wav], check=True)
+    return "espeak"
+
+def synth():
     os.makedirs("audio", exist_ok=True)
     files = []
-    for vi, v in enumerate(VOICES):
-        for pi, p in enumerate(PHRASES):
-            if p.isascii() and vi == 1 and False: continue
-            voice = v if not p.isascii() else ("en-IN-PrabhatNeural" if vi == 0 else "en-IN-NeerjaNeural")
-            mp3 = f"audio/{vi}_{pi}.mp3"; wav = f"audio/{vi}_{pi}.wav"
-            await edge_tts.Communicate(p, voice).save(mp3)
-            subprocess.run(["ffmpeg","-y","-loglevel","error","-i",mp3,"-ar","16000","-ac","1",wav], check=True)
-            files.append((wav, p))
+    for pi, p in enumerate(PHRASES):
+        mp3 = f"audio/{pi}.mp3"; wav = f"audio/{pi}.wav"
+        eng = tts_one(p, mp3, wav)
+        files.append((wav, p))
+    print("tts engine:", eng)
     return files
 
 def read(wav):
@@ -82,7 +92,7 @@ def vosk_run(model, pcm, grammar=None):
     return json.loads(r.FinalResult()).get("text", "")
 
 def main():
-    files = asyncio.run(synth())
+    files = synth()
     from vosk import Model, SetLogLevel
     SetLogLevel(-1)
     vm = Model("model-hi")
