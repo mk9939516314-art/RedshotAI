@@ -4,3 +4,4 @@ local.properties
 *.iml
 .idea/
 app/src/main/assets/model-hi/
+app/src/main/assets/model-en/

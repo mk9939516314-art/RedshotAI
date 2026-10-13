@@ -39,6 +39,21 @@ jobs:
           mv tmpmodel/vosk-model-small-hi-0.22 app/src/main/assets/model-hi
           ls -la app/src/main/assets/model-hi
 
+      - name: Cache wake-word model
+        id: enmodelcache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/model-en
+          key: vosk-model-small-en-us-0.15
+
+      - name: Download wake-word model (English)
+        if: steps.enmodelcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/src/main/assets tmpmodel2
+          curl -L --fail --retry 3 -o en.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q en.zip -d tmpmodel2
+          mv tmpmodel2/vosk-model-small-en-us-0.15 app/src/main/assets/model-en
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 

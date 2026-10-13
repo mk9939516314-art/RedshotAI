@@ -18,7 +18,7 @@ import kotlin.math.sqrt
  */
 class Ear(
     private val ctx: Context,
-    private val onUtterance: (String, ShortArray) -> Unit,
+    private val onUtterance: (String, ShortArray, Int) -> Unit,
     private val onState: (String) -> Unit
 ) {
     companion object {
@@ -65,6 +65,21 @@ class Ear(
         val model = try { Model(dir) } catch (e: Throwable) { onState("speech model khula nahi"); return }
         val rec = Recognizer(model, SR.toFloat())
 
+        // Wake-word spotters: tiny vocabulary => very accurate for just "Redshot" (English + Hindi spelling)
+        var enModel: Model? = null
+        var recEn: Recognizer? = null
+        var recHiWake: Recognizer? = null
+        try {
+            recHiWake = Recognizer(model, SR.toFloat(), "[\"रेड शॉट\", \"रेडशॉट\", \"रेड\", \"शॉट\", \"[unk]\"]")
+            val enDir = ModelStore.ensure(ctx, "model-en")
+            if (enDir != null) {
+                enModel = Model(enDir)
+                recEn = Recognizer(enModel, SR.toFloat(), "[\"red shot\", \"redshot\", \"[unk]\"]")
+            }
+        } catch (e: Throwable) {
+            // wake spotting stays partly off; free-text matching still works
+        }
+
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
             MediaRecorder.AudioSource.MIC, SR,
@@ -82,19 +97,37 @@ class Ear(
         val preroll = ArrayDeque<ShortArray>()
         val frames = ArrayList<ShortArray>()
         val text = StringBuilder()
+        val wakeEn = StringBuilder()
+        val wakeHi = StringBuilder()
         var floor = 150.0
         var speaking = false
         var loudRun = 0
         var quietRun = 0
 
+        fun feed(f: ShortArray) {
+            if (rec.acceptWaveForm(f, f.size)) text.append(' ').append(parse(rec.result))
+            recEn?.let { if (it.acceptWaveForm(f, f.size)) wakeEn.append(' ').append(parse(it.result)) }
+            recHiWake?.let { if (it.acceptWaveForm(f, f.size)) wakeHi.append(' ').append(parse(it.result)) }
+        }
+
+        fun resetAll() {
+            rec.reset(); recEn?.reset(); recHiWake?.reset()
+            wakeEn.setLength(0); wakeHi.setLength(0)
+        }
+
         fun finish() {
             text.append(' ').append(parse(rec.finalResult))
-            rec.reset()
+            recEn?.let { wakeEn.append(' ').append(parse(it.finalResult)) }
+            recHiWake?.let { wakeHi.append(' ').append(parse(it.finalResult)) }
+            val en = wakeEn.toString().replace(" ", "").contains("redshot")
+            val hi = wakeHi.toString().let { it.replace(" ", "").contains("रेडशॉट") }
+            val level = (if (en) 1 else 0) + (if (hi) 1 else 0)
+            resetAll()
             val count = frames.size
             if (count >= MIN_FRAMES) {
                 val pcm = ShortArray(count * FRAME)
                 for (i in 0 until count) System.arraycopy(frames[i], 0, pcm, i * FRAME, FRAME)
-                onUtterance(text.toString().trim(), pcm)
+                onUtterance(text.toString().trim(), pcm, level)
             }
             frames.clear()
             text.setLength(0)
@@ -116,7 +149,7 @@ class Ear(
 
                 if (paused || System.currentTimeMillis() < resumeAt) {
                     preroll.clear(); frames.clear(); text.setLength(0)
-                    if (speaking) { rec.reset(); speaking = false }
+                    if (speaking) { resetAll(); speaking = false }
                     loudRun = 0; quietRun = 0
                     continue
                 }
@@ -135,12 +168,12 @@ class Ear(
                     if (loudRun >= START_FRAMES) {
                         speaking = true
                         quietRun = 0
-                        for (f in preroll) { frames.add(f); rec.acceptWaveForm(f, f.size) }
+                        for (f in preroll) { frames.add(f); feed(f) }
                         preroll.clear()
                     }
                 } else {
                     frames.add(buf)
-                    if (rec.acceptWaveForm(buf, buf.size)) text.append(' ').append(parse(rec.result))
+                    feed(buf)
                     quietRun = if (rms > threshold * 0.6) 0 else quietRun + 1
                     if (quietRun >= END_FRAMES || frames.size >= MAX_FRAMES) finish()
                 }
@@ -151,6 +184,8 @@ class Ear(
             try { audio.stop() } catch (e: Exception) {}
             audio.release()
             rec.close()
+            recEn?.close(); recHiWake?.close()
+            enModel?.close()
             model.close()
         }
     }

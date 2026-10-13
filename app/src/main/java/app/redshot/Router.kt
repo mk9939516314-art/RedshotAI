@@ -98,6 +98,8 @@ object Router {
         }
         val name = ws.filter { it !in callWords && it !in particles }.joinToString(" ").trim()
         if (name.isEmpty()) return false
+        // unsure about the name (garbled, or not in contacts)? let the brain listen to the audio instead
+        if (Executor.resolveContact(ctx, name) == null) return false
         act(ctx, say, JSONObject().put("type", "call_contact").put("contact", name))
         return true
     }

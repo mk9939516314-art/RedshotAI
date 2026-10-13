@@ -216,11 +216,11 @@ object Executor {
         "behen" to listOf("behen", "didi", "sister", "sis", "बहन", "दीदी")
     )
 
-    private fun callContact(ctx: Context, name: String): String? {
-        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
-            return "contacts ki permission nahi di"
+    /** Phone number of the best matching contact, or null (no permission / no match). */
+    fun resolveContact(ctx: Context, name: String): String? {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
         val want = Apps.norm(name)
-        if (want.isEmpty()) return "kisko call karna hai?"
+        if (want.isEmpty()) return null
         val keys = HashSet<String>().apply {
             add(want)
             for ((_, group) in family) if (group.any { Apps.norm(it) == want }) group.forEach { add(Apps.norm(it)) }
@@ -253,7 +253,13 @@ object Executor {
                 if (score > bestScore) { bestScore = score; bestNum = num }
             }
         }
-        val num = bestNum ?: return "contact nahi mila: $name"
+        return bestNum
+    }
+
+    private fun callContact(ctx: Context, name: String): String? {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
+            return "contacts ki permission nahi di"
+        val num = resolveContact(ctx, name) ?: return "contact nahi mila: $name"
         startBg(ctx, Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(num))))
         return null
     }

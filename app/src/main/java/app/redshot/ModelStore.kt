@@ -3,17 +3,15 @@ package app.redshot
 import android.content.Context
 import java.io.File
 
-/** Copies the offline speech model out of the APK once, so it can be opened as a normal folder. */
+/** Copies the offline speech models out of the APK once, so they can be opened as normal folders. */
 object ModelStore {
-    private const val ASSET_DIR = "model-hi"
-
-    fun ensure(ctx: Context): String? {
+    fun ensure(ctx: Context, assetDir: String = "model-hi"): String? {
         return try {
-            val target = File(ctx.filesDir, ASSET_DIR)
+            val target = File(ctx.filesDir, assetDir)
             val marker = File(target, ".ok-" + versionTag(ctx))
             if (!marker.exists()) {
                 target.deleteRecursively()
-                copyDir(ctx, ASSET_DIR, target)
+                copyDir(ctx, assetDir, target)
                 marker.writeText("ok")
             }
             target.absolutePath

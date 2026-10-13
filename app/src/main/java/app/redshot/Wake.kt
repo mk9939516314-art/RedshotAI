@@ -32,4 +32,25 @@ object Wake {
         }
         return null
     }
+
+    /**
+     * Wake decision + cleaned command. level = how many of the two keyword spotters fired (0..2).
+     * Returns null when "Redshot" was not said.
+     */
+    fun detect(text: String, level: Int): String? {
+        Wake.strip(text)?.let { return it }
+        if (level == 0) return null
+        // The spotter heard it but the free recogniser garbled it ("रेड शौच"): drop the garbled bit
+        val ws = tokens(text).toMutableList()
+        val i = ws.indexOfFirst { Apps.skel(it) == "rd" }
+        if (i >= 0) {
+            ws.removeAt(i)
+            if (i < ws.size && (ws[i].startsWith("श") || ws[i].startsWith("sh") || ws[i].startsWith("स"))) ws.removeAt(i)
+        } else if (ws.isNotEmpty() && (ws[0].startsWith("श") || ws[0].startsWith("sh"))) {
+            ws.removeAt(0)
+        } else if (ws.size == 1 && ws[0].length <= 5) {
+            ws.clear()   // only noise next to the spotted name
+        }
+        return ws.joinToString(" ")
+    }
 }

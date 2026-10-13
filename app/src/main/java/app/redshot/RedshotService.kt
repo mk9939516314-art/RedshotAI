@@ -83,7 +83,7 @@ class RedshotService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (ear == null || ear?.running == false) {
             ear?.stop()
-            ear = Ear(this, { text, pcm -> onHeard(text, pcm) }, { s -> state = s }).also { it.start() }
+            ear = Ear(this, { text, pcm, wake -> onHeard(text, pcm, wake) }, { s -> state = s }).also { it.start() }
         }
         return START_STICKY
     }
@@ -104,13 +104,12 @@ class RedshotService : Service() {
     private val acks = listOf("हाँ भाई, बोल।", "हाँ, बता।", "जी, बोलो।", "हाँ भाई, सुन रहा हूँ।")
     private val filler = "हम्म, एक सेकंड..."
 
-    private fun onHeard(text: String, pcm: ShortArray) {
+    private fun onHeard(text: String, pcm: ShortArray, wake: Int) {
         val now = System.currentTimeMillis()
         if (text.isNotEmpty() && text == lastText && now - lastTextAt < 3000) return
         lastText = text
         lastTextAt = now
-        heard = if (text.isEmpty()) "(kuch samajh nahi aaya)" else text
-        if (text.isBlank()) return
+        heard = (if (wake > 0) "[Redshot suna] " else "") + (if (text.isEmpty()) "(kuch samajh nahi aaya)" else text)
 
         // Phone commands never wait behind a slow brain call: they have their own lane.
         fast.execute {
@@ -119,25 +118,28 @@ class RedshotService : Service() {
 
             // while muted, only the wake-up phrase counts (no "Redshot" needed)
             if (muted) {
-                Router.handle(this, text, true, say, setMuted)
+                if (text.isNotBlank()) Router.handle(this, text, true, say, setMuted)
                 route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "wapas sun raha hoon"
                 return@execute
             }
 
             // Only act when "Redshot" was said, or we are in the middle of a conversation.
-            val stripped = Wake.strip(text)
+            val cleaned = Wake.detect(text, wake)
             val inWindow = now < windowUntil
-            if (stripped == null && !inWindow) { route = "Redshot naam nahi suna, ignore kiya"; return@execute }
-            val cmd = (stripped ?: text).trim()
+            if (cleaned == null && !inWindow) { route = "Redshot naam nahi suna, ignore kiya"; return@execute }
+            val cmd = (cleaned ?: text).trim()
+            val seconds = pcm.size / 16000.0
 
-            if (cmd.isEmpty()) {
+            val handled = try { cmd.isNotEmpty() && Router.handle(this, cmd, false, say, setMuted) } catch (e: Exception) { false }
+
+            // just the name, nothing else (or only a junk word next to it)
+            if (!handled && (cmd.isEmpty() || (cleaned != null && seconds < 1.3 && cmd.split(" ").size <= 1))) {
                 windowUntil = now + 10_000
                 route = "Redshot suna, jawab diya"
                 say(acks[(now % acks.size).toInt()], "hi-IN")
                 return@execute
             }
 
-            val handled = try { Router.handle(this, cmd, false, say, setMuted) } catch (e: Exception) { false }
             if (handled) {
                 windowUntil = System.currentTimeMillis() + 8_000
                 lastReplyAt = System.currentTimeMillis()
@@ -145,19 +147,22 @@ class RedshotService : Service() {
             } else {
                 io.execute {
                     if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
-                    askBrain(cmd)
+                    askBrain(cmd, pcm, if (cleaned != null) (if (wake >= 2) 2 else 1) else 2)
                 }
             }
         }
     }
 
-    private fun askBrain(text: String) {
+    // wakeLevel: 2 = sure it was meant for Redshot, 1 = spotter unsure (the brain double-checks the audio)
+    private fun askBrain(text: String, pcm: ShortArray, wakeLevel: Int) {
         route = "brain ko bheja..."
         val body = JSONObject()
             .put("ts", System.currentTimeMillis())
             .put("pkg", RedshotAccess.currentPackage)
-            .put("text", text)
             .put("wake", true)
+            .put("weak", wakeLevel < 2)
+            .put("audio", Audio.wavBase64(pcm))
+        if (text.isNotBlank()) body.put("text", text)
 
         // if the brain takes a moment, say something short so it never feels dead
         val waiting = keepAlive.schedule(Runnable {
