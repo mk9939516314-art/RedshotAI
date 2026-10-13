@@ -1,0 +1,16 @@
+name: STT eval
+on: workflow_dispatch
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install
+        run: |
+          pip install vosk faster-whisper edge-tts numpy
+          curl -L --fail --retry 3 -o hi.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+          unzip -q hi.zip && mv vosk-model-small-hi-0.22 model-hi
+      - name: Run eval
+        run: python tools/stt_eval.py
