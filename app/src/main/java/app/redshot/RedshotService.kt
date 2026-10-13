@@ -32,6 +32,7 @@ class RedshotService : Service() {
     }
 
     private val io = Executors.newSingleThreadExecutor()
+    private val keepAlive = Executors.newSingleThreadScheduledExecutor()
     private var ear: Ear? = null
     private var speaker: Speaker? = null
     private var announcedPending = false
@@ -65,6 +66,10 @@ class RedshotService : Service() {
             return
         }
         speaker = Speaker(this) { busy -> ear?.setPaused(busy) }
+        // keep the brain warm so the first reply is as fast as the rest
+        keepAlive.scheduleWithFixedDelay({
+            try { if (!muted) Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000) } catch (e: Exception) {}
+        }, 5, 240, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -81,6 +86,7 @@ class RedshotService : Service() {
         state = "band"
         speaker?.shutdown()
         io.shutdownNow()
+        keepAlive.shutdownNow()
         super.onDestroy()
     }
 

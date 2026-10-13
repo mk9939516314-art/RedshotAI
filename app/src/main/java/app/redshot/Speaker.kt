@@ -9,6 +9,8 @@ import android.speech.tts.UtteranceProgressListener
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -53,7 +55,7 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
         onBusy(true)
         pool.execute {
             try {
-                val played = cloudOk && cloud(text, lang)
+                val played = (try { fromCache(text, lang) } catch (e: Exception) { false }) || (cloudOk && cloud(text, lang))
                 if (!played) system(text, lang)
             } catch (e: Exception) {
                 // never let a voice problem stop the assistant
@@ -70,9 +72,70 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
 
     // ---------- premium cloud voice ----------
 
+    private fun cacheFile(text: String, lang: String): File {
+        val h = MessageDigest.getInstance("SHA-1").digest((lang + "|" + text).toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return File(File(ctx.cacheDir, "voice").also { it.mkdirs() }, "$h.pcm")
+    }
+
+    private fun trimCache() {
+        val files = File(ctx.cacheDir, "voice").listFiles() ?: return
+        var total = files.sumOf { it.length() }
+        for (f in files.sortedBy { it.lastModified() }) {
+            if (total <= 40L * 1024 * 1024) break
+            total -= f.length()
+            f.delete()
+        }
+    }
+
+    private fun newTrack(rate: Int): AudioTrack {
+        val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        return AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(minBuf, rate))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+    }
+
+    /** Replies heard before are played from the phone: instant, and works with no internet. */
+    private fun fromCache(text: String, lang: String): Boolean {
+        val f = cacheFile(text, lang)
+        if (!f.exists() || f.length() < 2000) return false
+        val data = f.readBytes()
+        val track = newTrack(24000)
+        try {
+            track.play()
+            engine = "premium (saved)"
+            track.write(data, 0, data.size - data.size % 2)
+            track.stop()
+            val frames = data.size / 2
+            val deadline = System.currentTimeMillis() + 25_000
+            while (track.playbackHeadPosition < frames && System.currentTimeMillis() < deadline) Thread.sleep(15)
+            f.setLastModified(System.currentTimeMillis())
+            return true
+        } finally {
+            try { track.release() } catch (e: Exception) {}
+        }
+    }
+
     private fun cloud(text: String, lang: String): Boolean {
+        if (fromCache(text, lang)) return true
         var track: AudioTrack? = null
         var written = 0L
+        val tee = java.io.ByteArrayOutputStream()
+        var complete = false
         try {
             val c = URL(Config.brainUrl(ctx).trimEnd('/') + "/_api/device/speak").openConnection() as HttpURLConnection
             c.requestMethod = "POST"
@@ -89,25 +152,7 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
             if (code == 501) { cloudOk = false; cloudOffAt = System.currentTimeMillis(); return false }
             if (code !in 200..299) return false
 
-            val rate = 24000
-            val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(rate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(maxOf(minBuf, rate))
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            track = newTrack(24000)
             track.play()
             engine = "premium"
 
@@ -123,7 +168,11 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
                 System.arraycopy(buf, 0, out, len, n)
                 len += n
                 if (len % 2 == 1) { leftover = out[len - 1].toInt() and 0xFF; len -= 1 }
-                if (len > 0) { track.write(out, 0, len); written += len / 2 }
+                if (len > 0) { track.write(out, 0, len); tee.write(out, 0, len); written += len / 2 }
+            }
+            complete = true
+            if (text.length <= 160 && tee.size() > 2000) {
+                try { cacheFile(text, lang).writeBytes(tee.toByteArray()); trimCache() } catch (e: Exception) {}
             }
             track.stop()
             val deadline = System.currentTimeMillis() + 25_000
