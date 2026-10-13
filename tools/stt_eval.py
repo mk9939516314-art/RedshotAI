@@ -85,7 +85,7 @@ def noisy(x, snr_db=8):
     return np.clip(x + n, -32768, 32767).astype(np.int16)
 
 def vosk_run(model, pcm, grammar=None):
-    from vosk import Recognizer
+    from vosk import KaldiRecognizer as Recognizer
     r = Recognizer(model, 16000, grammar) if grammar else Recognizer(model, 16000)
     b = pcm.tobytes()
     for i in range(0, len(b), 6400): r.AcceptWaveform(b[i:i+6400])
