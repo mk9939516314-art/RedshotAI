@@ -1,5 +1,7 @@
 name: STT eval
 on: workflow_dispatch
+permissions:
+  contents: write
 jobs:
   eval:
     runs-on: ubuntu-latest
@@ -9,8 +11,18 @@ jobs:
         with: { python-version: "3.11" }
       - name: Install
         run: |
-          pip install vosk faster-whisper edge-tts numpy
+          pip install vosk faster-whisper edge-tts numpy 2>&1 | tail -3
           curl -L --fail --retry 3 -o hi.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
           unzip -q hi.zip && mv vosk-model-small-hi-0.22 model-hi
       - name: Run eval
-        run: python tools/stt_eval.py
+        run: python tools/stt_eval.py > /tmp/out.txt 2>&1 || (echo "EXIT FAILED" >> /tmp/out.txt)
+      - name: Publish result to branch
+        if: always()
+        run: |
+          cp /tmp/out.txt stt_result.txt
+          git config user.name ci; git config user.email ci@example.com
+          git checkout --orphan eval-results
+          git rm -rf . -q || true
+          git add stt_result.txt
+          git commit -q -m "stt result"
+          git push -f origin eval-results
