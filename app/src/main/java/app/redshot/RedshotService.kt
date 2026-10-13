@@ -7,17 +7,13 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import org.json.JSONObject
-import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
- * Background body of Redshot: no screen. Own offline ears -> instant on-phone commands -> brain for everything else.
+ * Background body of Redshot: no screen.
+ * Own ears -> instant on-phone commands -> brain (audio + text) for everything else -> premium voice.
  */
 class RedshotService : Service() {
 
@@ -28,14 +24,22 @@ class RedshotService : Service() {
         @Volatile var heard: String = ""
         @Volatile var route: String = ""
         @Volatile var lastAction: String = ""
+        @Volatile var voice: String = "-"
+        @Volatile var muted: Boolean = false
+
+        private const val CONVERSATION_MS = 90_000L
+        private const val STALE_MS = 20_000L
     }
 
-    private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
     private var ear: Ear? = null
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
+    private var speaker: Speaker? = null
     private var announcedPending = false
+
+    @Volatile private var lastReplyAt = 0L
+    @Volatile private var lastText = ""
+    @Volatile private var lastTextAt = 0L
+    @Volatile private var lastOfflineNoticeAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -60,24 +64,13 @@ class RedshotService : Service() {
             stopSelf()
             return
         }
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale("hi", "IN")
-                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(id: String?) {}
-                    override fun onDone(id: String?) { ear?.paused = false }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(id: String?) { ear?.paused = false }
-                })
-                ttsReady = true
-            }
-        }
+        speaker = Speaker(this) { busy -> ear?.setPaused(busy) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (ear == null || ear?.running == false) {
             ear?.stop()
-            ear = Ear(this, { text -> handleUtterance(text) }, { s -> state = s }).also { it.start() }
+            ear = Ear(this, { text, pcm -> onHeard(text, pcm) }, { s -> state = s }).also { it.start() }
         }
         return START_STICKY
     }
@@ -86,51 +79,102 @@ class RedshotService : Service() {
         ear?.stop()
         ear = null
         state = "band"
-        tts?.shutdown()
+        speaker?.shutdown()
+        io.shutdownNow()
         super.onDestroy()
     }
 
-    private fun handleUtterance(text: String) {
-        // Fast lane first: handled on the phone, no internet, near-instant.
-        if (Router.handle(this, text)) { route = "phone ne turant kiya"; return }
-        route = "brain ko bheja..."
+    // ---------- one spoken sentence ----------
 
-        // Everything else: the brain decides if it was meant for Redshot and what to do.
+    private fun onHeard(text: String, pcm: ShortArray) {
+        val now = System.currentTimeMillis()
+        if (text.isNotEmpty() && text == lastText && now - lastTextAt < 3000) return
+        lastText = text
+        lastTextAt = now
+        heard = if (text.isEmpty()) "(phone ne samjha nahi, brain ko audio bheja)" else text
+
         io.execute {
-            val body = JSONObject()
-                .put("text", text)
-                .put("ts", System.currentTimeMillis())
-                .put("pkg", RedshotAccess.currentPackage)
-            val res = Brain.post(this, "device/hear", body)
-            if (res == null) { route = "brain fail: " + Brain.lastError; return@execute }
-            route = if (res.optString("say").isBlank() && res.optJSONArray("actions") == null) "brain: mujhse nahi tha" else "brain ne jawab diya"
-            main.post { apply(res) }
+            if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
+            process(text, pcm)
+        }
+    }
+
+    private fun process(text: String, pcm: ShortArray) {
+        // 1) fast lane: handled on the phone, no internet
+        val handled = try {
+            Router.handle(
+                this, text, muted,
+                { s, lang -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" },
+                { m -> muted = m }
+            )
+        } catch (e: Exception) { false }
+        if (handled) {
+            if (!muted) lastReplyAt = System.currentTimeMillis()
+            route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
+            return
+        }
+        if (muted) return
+
+        // 2) brain: it hears the raw audio itself (any language) and decides if it was meant for Redshot
+        route = "brain ko bheja..."
+        val body = JSONObject()
+            .put("ts", System.currentTimeMillis())
+            .put("pkg", RedshotAccess.currentPackage)
+            .put("audio", Audio.wavBase64(pcm))
+        if (text.isNotBlank()) body.put("text", text)
+
+        val res = Brain.post(this, "device/hear", body, 15000)
+        if (res == null) {
+            route = "brain fail: " + Brain.lastError
+            offlineNotice()
+            return
+        }
+        apply(res)
+    }
+
+    private fun offlineNotice() {
+        val now = System.currentTimeMillis()
+        val inConversation = now - lastReplyAt < CONVERSATION_MS
+        if (inConversation && now - lastOfflineNoticeAt > 60_000) {
+            lastOfflineNoticeAt = now
+            speaker?.say("इंटरनेट नहीं है भाई, अभी बस फोन वाले कमांड चलेंगे।", "hi-IN")
         }
     }
 
     private fun apply(res: JSONObject) {
         if (res.optBoolean("pending")) {
+            route = "device approve nahi hai"
             if (!announcedPending) {
                 announcedPending = true
-                speak("Bhai, ye phone abhi approve nahi hai.")
+                speaker?.say("भाई, ये फोन अभी approve नहीं है।", "hi-IN")
             }
             return
         }
+
         val acts = res.optJSONArray("actions")
+        val say = res.optString("say", "")
+        val lang = res.optString("lang", "hi-IN").ifBlank { "hi-IN" }
+        val hadReply = say.isNotBlank() || (acts != null && acts.length() > 0)
+        if (!hadReply) { route = "brain: mujhse nahi tha"; return }
+
+        var failure: String? = null
         if (acts != null) {
             for (i in 0 until acts.length()) {
                 val a = acts.optJSONObject(i) ?: continue
                 val note = Executor.run(this, a)
                 lastAction = a.optString("type") + (if (note != null) " -> " + note else " ok")
+                if (note != null && failure == null) failure = note
             }
         }
-        val say = res.optString("say", "")
-        if (say.isNotBlank()) speak(say)
-    }
+        lastReplyAt = System.currentTimeMillis()
+        route = "brain ne jawab diya"
 
-    private fun speak(text: String) {
-        if (!ttsReady) return
-        ear?.paused = true
-        tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "u" + System.nanoTime())
+        if (failure != null) {
+            // never claim success for something that did not happen
+            speaker?.say("भाई, ये नहीं हो पाया। $failure", "hi-IN")
+        } else if (say.isNotBlank()) {
+            speaker?.say(say, lang)
+        }
+        voice = speaker?.engine ?: "-"
     }
 }

@@ -1,7 +1,10 @@
 package app.redshot
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Path
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -49,8 +52,39 @@ class RedshotAccess : AccessibilityService() {
         "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
         "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
         "quick_settings" -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
-        "lock" -> performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        "lock" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) else false
+        "screenshot" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT) else false
         else -> false
+    }
+
+    /** Scroll the page in front of the user. dir: down (see more below) / up. */
+    fun scroll(dir: String): Boolean {
+        val down = dir == "down"
+        val root = rootInActiveWindow
+        if (root != null) {
+            val node = findScrollable(root)
+            if (node != null) {
+                val act = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                if (node.performAction(act)) return true
+            }
+        }
+        // fallback: a swipe gesture in the middle of the screen
+        val dm = resources.displayMetrics
+        val x = dm.widthPixels / 2f
+        val y1 = dm.heightPixels * (if (down) 0.72f else 0.28f)
+        val y2 = dm.heightPixels * (if (down) 0.28f else 0.72f)
+        val p = Path().apply { moveTo(x, y1); lineTo(x, y2) }
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 260)).build()
+        return dispatchGesture(g, null, null)
+    }
+
+    private fun findScrollable(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (n.isScrollable) return n
+        for (i in 0 until n.childCount) {
+            val c = n.getChild(i) ?: continue
+            findScrollable(c)?.let { return it }
+        }
+        return null
     }
 
     fun tapText(text: String): Boolean {

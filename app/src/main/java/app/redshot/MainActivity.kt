@@ -49,7 +49,8 @@ class MainActivity : Activity() {
                 arrayOf(
                     Manifest.permission.RECORD_AUDIO,
                     Manifest.permission.POST_NOTIFICATIONS,
-                    Manifest.permission.CALL_PHONE
+                    Manifest.permission.CALL_PHONE,
+                    Manifest.permission.READ_CONTACTS
                 ), 1
             )
         }
@@ -101,6 +102,8 @@ class MainActivity : Activity() {
             "\nAwaaz level: " + RedshotService.level + " (trigger: " + RedshotService.threshold + ")" +
             "\nSuna: " + RedshotService.heard +
             "\nRasta: " + RedshotService.route +
+            "\nAwaaz (voice): " + RedshotService.voice +
+            (if (RedshotService.muted) "\nMODE: chup (mute)" else "") +
             "\nKaam: " + RedshotService.lastAction +
             "\n" + brain
     }
