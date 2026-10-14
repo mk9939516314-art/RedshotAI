@@ -19,7 +19,9 @@ import kotlin.math.sqrt
 class Ear(
     private val ctx: Context,
     private val onUtterance: (String, ShortArray, Int) -> Unit,
-    private val onState: (String) -> Unit
+    private val onState: (String) -> Unit,
+    private val onHint: () -> Unit = {},
+    private val onVoice: () -> Unit = {}
 ) {
     companion object {
         private const val SR = 16000
@@ -34,6 +36,8 @@ class Ear(
     @Volatile private var alive = false
     @Volatile private var paused = false
     @Volatile private var resumeAt = 0L
+    /** When set, the ear is in a live conversation: raw 20 ms frames go straight to the sink. */
+    @Volatile private var liveSink: ((ShortArray) -> Unit)? = null
     private var thread: Thread? = null
 
     val running: Boolean get() = thread?.isAlive == true
@@ -48,6 +52,9 @@ class Ear(
         alive = false
         thread?.interrupt()
     }
+
+    fun startLive(sink: (ShortArray) -> Unit) { liveSink = sink }
+    fun stopLive() { liveSink = null }
 
     /** While Redshot itself is talking the ear stays shut (plus a short tail so it never hears its own echo). */
     fun setPaused(p: Boolean) {
@@ -82,7 +89,7 @@ class Ear(
 
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
-            MediaRecorder.AudioSource.MIC, SR,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION, SR,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, FRAME * 2 * 8)
         )
@@ -91,6 +98,9 @@ class Ear(
             audio.release()
             return
         }
+        // phone-side echo cancellation + noise suppression so Redshot does not hear itself while talking
+        try { if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) android.media.audiofx.AcousticEchoCanceler.create(audio.audioSessionId)?.enabled = true } catch (e: Throwable) {}
+        try { if (android.media.audiofx.NoiseSuppressor.isAvailable()) android.media.audiofx.NoiseSuppressor.create(audio.audioSessionId)?.enabled = true } catch (e: Throwable) {}
         audio.startRecording()
         onState("sun raha hoon")
 
@@ -103,6 +113,9 @@ class Ear(
         var speaking = false
         var loudRun = 0
         var quietRun = 0
+        var hintTick = 0
+        var hintAt = 0L
+        var wasLive = false
 
         fun feed(f: ShortArray) {
             if (rec.acceptWaveForm(f, f.size)) text.append(' ').append(parse(rec.result))
@@ -147,6 +160,21 @@ class Ear(
                 }
                 if (got < FRAME) { Thread.sleep(20); continue }
 
+                val sink = liveSink
+                if (sink != null) {
+                    if (!wasLive) {
+                        wasLive = true
+                        resetAll(); frames.clear(); preroll.clear(); text.setLength(0)
+                        speaking = false; loudRun = 0; quietRun = 0
+                    }
+                    val r = rms(buf)
+                    RedshotService.level = r.toInt()
+                    if (r > maxOf(floor * 3.0, 350.0)) onVoice() else floor = (floor * 0.98 + r * 0.02).coerceIn(60.0, 1500.0)
+                    sink(buf)
+                    continue
+                }
+                if (wasLive) { wasLive = false; resetAll() }
+
                 if (paused || System.currentTimeMillis() < resumeAt) {
                     preroll.clear(); frames.clear(); text.setLength(0)
                     if (speaking) { resetAll(); speaking = false }
@@ -174,6 +202,11 @@ class Ear(
                 } else {
                     frames.add(buf)
                     feed(buf)
+                    // early hint: the spotter already sees "red"/"shot" -> let the service pre-open the live connection
+                    if (++hintTick % 8 == 0 && recEn != null && System.currentTimeMillis() - hintAt > 4000) {
+                        val part = try { JSONObject(recEn?.partialResult ?: "{}").optString("partial", "") } catch (e: Exception) { "" }
+                        if (part.contains("red") || part.contains("shot")) { hintAt = System.currentTimeMillis(); onHint() }
+                    }
                     quietRun = if (rms > threshold * 0.6) 0 else quietRun + 1
                     if (quietRun >= END_FRAMES || frames.size >= MAX_FRAMES) finish()
                 }

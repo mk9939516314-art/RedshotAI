@@ -4,7 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -26,6 +29,9 @@ class RedshotService : Service() {
         @Volatile var lastAction: String = ""
         @Volatile var voice: String = "-"
         @Volatile var muted: Boolean = false
+        @Volatile var live: String = "band"
+        @Volatile var liveHeard: String = ""
+        @Volatile var liveSaid: String = ""
 
         private const val CONVERSATION_MS = 90_000L
         private const val STALE_MS = 20_000L
@@ -43,6 +49,24 @@ class RedshotService : Service() {
     @Volatile private var lastText = ""
     @Volatile private var lastTextAt = 0L
     @Volatile private var lastOfflineNoticeAt = 0L
+
+    // ---- live voice session (Gemini Live) ----
+    private var liveKey: String? = null
+    private var liveSetup: JSONObject? = null
+    @Volatile private var liveCfgAt = 0L
+    @Volatile private var liveCfgFailAt = 0L
+    @Volatile private var session: LiveSession? = null
+    @Volatile private var liveActive = false
+    @Volatile private var openedAt = 0L
+    @Volatile private var liveStartedAt = 0L
+    @Volatile private var lastLiveActivity = 0L
+    @Volatile private var modelSpeaking = false
+    @Volatile private var userVoiceSinceTurn = false
+    @Volatile private var silentTurns = 0
+    private var fallback: Triple<String, ShortArray, Int>? = null
+    private var savedAudioMode = AudioManager.MODE_NORMAL
+    private var savedSpeaker = false
+    private val liveLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,6 +99,7 @@ class RedshotService : Service() {
             "हाँ भाई, बोल।" to "hi-IN"
         ))
         // keep the brain warm so the first reply is as fast as the rest
+        keepAlive.scheduleWithFixedDelay(Runnable { liveWatchdog() }, 1, 1, java.util.concurrent.TimeUnit.SECONDS)
         keepAlive.scheduleWithFixedDelay({
             try { if (!muted) Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000) } catch (e: Exception) {}
         }, 5, 240, java.util.concurrent.TimeUnit.SECONDS)
@@ -83,12 +108,14 @@ class RedshotService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (ear == null || ear?.running == false) {
             ear?.stop()
-            ear = Ear(this, { text, pcm, wake -> onHeard(text, pcm, wake) }, { s -> state = s }).also { it.start() }
+            ear = Ear(this, { text, pcm, wake -> onHeard(text, pcm, wake) }, { s -> state = s },
+                { prewarm() }, { onUserVoice() }).also { it.start() }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        closeLive("service stop")
         ear?.stop()
         ear = null
         state = "band"
@@ -145,9 +172,201 @@ class RedshotService : Service() {
                 lastReplyAt = System.currentTimeMillis()
                 route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
             } else {
+                val level = if (cleaned != null) (if (wake >= 2) 2 else 1) else 2
                 io.execute {
                     if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
-                    askBrain(cmd, pcm, if (cleaned != null) (if (wake >= 2) 2 else 1) else 2)
+                    if (!startLive(cmd, pcm, level)) askBrain(cmd, pcm, level)
+                }
+            }
+        }
+    }
+
+    // ---------- live conversation ----------
+
+    private fun loadLiveConfig(): Boolean {
+        val now = System.currentTimeMillis()
+        if (liveKey != null && liveSetup != null && now - liveCfgAt < 10 * 60_000L) return true
+        if (now - liveCfgFailAt < 60_000L) return liveKey != null && liveSetup != null
+        val r = Brain.post(this, "device/live_config", JSONObject(), 8000)
+        val k = r?.optString("key", "") ?: ""
+        val st = r?.optJSONObject("setup")
+        if (k.isBlank() || st == null) {
+            liveCfgFailAt = now
+            live = "config nahi mila: " + Brain.lastError
+            return liveKey != null && liveSetup != null
+        }
+        liveKey = k; liveSetup = st; liveCfgAt = now
+        return true
+    }
+
+    private fun newSession(): LiveSession? {
+        val k = liveKey ?: return null
+        val st = liveSetup ?: return null
+        val s = LiveSession(liveHost)
+        session = s
+        openedAt = System.currentTimeMillis()
+        live = "connect ho raha hai"
+        try { s.open(k, st) } catch (e: Exception) { session = null; return null }
+        return s
+    }
+
+    /** "red"/"shot" heard in the first words: open the connection now so it is ready when the sentence ends. */
+    private fun prewarm() {
+        if (muted || liveActive || session != null) return
+        io.execute {
+            synchronized(liveLock) {
+                if (muted || liveActive || session != null) return@execute
+                if (!loadLiveConfig()) return@execute
+                newSession()
+            }
+        }
+    }
+
+    /** Returns true when the live session took over (it answers by voice). */
+    private fun startLive(cmd: String, pcm: ShortArray, wakeLevel: Int): Boolean {
+        synchronized(liveLock) {
+            if (!loadLiveConfig()) return false
+            var s = session
+            if (s == null || s.isClosed) { session = null; s = newSession() }
+            if (s == null) return false
+            if (liveActive) return true
+            liveActive = true
+            liveStartedAt = System.currentTimeMillis()
+            lastLiveActivity = liveStartedAt
+            silentTurns = 0
+            userVoiceSinceTurn = true
+            fallback = Triple(cmd, pcm, wakeLevel)
+            route = "live: Redshot ne turant suna"
+            enterCallAudio()
+            s.sendBurst(pcm)
+            ear?.startLive { f -> session?.feed(f) }
+            return true
+        }
+    }
+
+    private fun closeLive(reason: String) {
+        var s: LiveSession? = null
+        synchronized(liveLock) {
+            s = session
+            session = null
+            val was = liveActive
+            liveActive = false
+            fallback = null
+            modelSpeaking = false
+            if (was) leaveCallAudio()
+        }
+        ear?.stopLive()
+        try { s?.close() } catch (e: Exception) {}
+        live = "band: $reason"
+    }
+
+    private fun liveWatchdog() {
+        try {
+            val now = System.currentTimeMillis()
+            val s = session
+            if (!liveActive) {
+                // a pre-opened connection nobody used
+                if (s != null && now - openedAt > 8_000) closeLive("prewarm khatam")
+                return
+            }
+            if (!modelSpeaking && now - lastLiveActivity > 12_000) closeLive("chup rehne se band")
+            else if (now - liveStartedAt > 8 * 60_000L) closeLive("8 min poore")
+        } catch (e: Exception) {}
+    }
+
+    private fun onUserVoice() {
+        lastLiveActivity = System.currentTimeMillis()
+        userVoiceSinceTurn = true
+    }
+
+    private fun enterCallAudio() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            savedAudioMode = am.mode
+            @Suppress("DEPRECATION")
+            savedSpeaker = am.isSpeakerphoneOn
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            val headset = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+            }
+            @Suppress("DEPRECATION")
+            if (!headset) am.isSpeakerphoneOn = true
+        } catch (e: Exception) {}
+    }
+
+    private fun leaveCallAudio() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = savedSpeaker
+            am.mode = savedAudioMode
+        } catch (e: Exception) {}
+    }
+
+    private val liveHost = object : LiveSession.Host {
+        override fun onReady() { live = if (liveActive) "live: sun raha hoon" else "live: taiyaar" }
+
+        override fun onModelAudio() {
+            fallback = null
+            lastLiveActivity = System.currentTimeMillis()
+        }
+
+        override fun onModelSpeaking(speaking: Boolean) {
+            modelSpeaking = speaking
+            lastLiveActivity = System.currentTimeMillis()
+            if (speaking) live = "live: bol raha hoon"
+        }
+
+        override fun onTurnComplete() {
+            lastLiveActivity = System.currentTimeMillis()
+            if (!liveActive) return
+            // loop breaker: model keeps answering but the user never spoke (echo / noise)
+            if (userVoiceSinceTurn) silentTurns = 0 else silentTurns++
+            userVoiceSinceTurn = false
+            if (silentTurns >= 3) io.execute { closeLive("khud se baat ho rahi thi") }
+        }
+
+        override fun onUserText(t: String) { liveHeard += t; if (liveHeard.length > 160) liveHeard = liveHeard.takeLast(160); heard = "[live] " + liveHeard; fallback = null }
+        override fun onModelText(t: String) { liveSaid += t; if (liveSaid.length > 160) liveSaid = liveSaid.takeLast(160) }
+
+        override fun onClosed(reason: String, wasReady: Boolean) {
+            val fb = fallback
+            val wasActive = liveActive
+            fallback = null
+            io.execute {
+                if (session?.isClosed == true) session = null
+                if (wasActive) closeLive(reason)
+                else live = "band: $reason"
+                if (!wasReady && fb != null) {
+                    route = "live nahi laga ($reason), brain se"
+                    askBrain(fb.first, fb.second, fb.third)
+                }
+            }
+        }
+
+        override fun onTool(name: String, args: JSONObject): String {
+            lastLiveActivity = System.currentTimeMillis()
+            return when (name) {
+                "web_search" -> {
+                    val r = Brain.post(this@RedshotService, "device/search", JSONObject().put("query", args.optString("query")), 14000)
+                    r?.optString("result", "")?.ifBlank { null } ?: "error: search nahi hua (${Brain.lastError})"
+                }
+                "remember" -> {
+                    val r = Brain.post(this@RedshotService, "device/remember", JSONObject().put("fact", args.optString("fact")), 8000)
+                    if (r != null) "ok" else "error: yaad nahi rakh paya"
+                }
+                "mute_listening" -> {
+                    muted = true
+                    io.execute { Thread.sleep(2500); closeLive("mute") }
+                    "ok"
+                }
+                else -> {
+                    val a = JSONObject(args.toString()).put("type", name)
+                    val note = Executor.run(this@RedshotService, a)
+                    lastAction = name + (if (note != null) " -> " + note else " ok")
+                    if (note == null) "ok" else "error: $note"
                 }
             }
         }

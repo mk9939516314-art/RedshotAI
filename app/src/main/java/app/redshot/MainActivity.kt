@@ -102,6 +102,9 @@ class MainActivity : Activity() {
             "\nAwaaz level: " + RedshotService.level + " (trigger: " + RedshotService.threshold + ")" +
             "\nSuna: " + RedshotService.heard +
             "\nRasta: " + RedshotService.route +
+            "\nLive: " + RedshotService.live +
+            "\nLive ne suna: " + RedshotService.liveHeard +
+            "\nLive ne kaha: " + RedshotService.liveSaid +
             "\nAwaaz (voice): " + RedshotService.voice +
             (if (RedshotService.muted) "\nMODE: chup (mute)" else "") +
             "\nKaam: " + RedshotService.lastAction +
