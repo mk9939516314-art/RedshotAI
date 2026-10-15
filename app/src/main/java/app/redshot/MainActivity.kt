@@ -57,11 +57,11 @@ class MainActivity : Activity() {
     private var showDetails = false
 
     private val enrollLines = listOf(
-        "Aaj mausam bahut achha hai, main apne ghar se baahar ghoomne ja raha hoon.",
-        "Redshot, mummy ko call laga aur phir mere liye ek gaana chala dena.",
-        "Kal subah saat baje mujhe uthana, kyunki class jaldi shuru hoti hai.",
-        "Open YouTube and search for the latest news about technology and science.",
-        "Mera naam Mayank hai aur main Jammu mein padhai karta hoon, bahut mehnat se.",
+        "Aaj mausam bahut achha hai, main apne ghar se baahar ghoomne jaa raha hoon.",
+        "Redshot, mummy ko phone laga aur phir mere liye ek achha sa gaana chala de.",
+        "Kal subah saat baje mujhe utha dena, kyunki kal meri class jaldi shuru hoti hai.",
+        "Mujhe aaj bahut saare kaam karne hain, isliye mera dhyaan rakhna aur yaad dilana.",
+        "Mera naam Mayank hai aur main Jammu mein rehkar apni padhai karta hoon.",
         "Tum mujhe batao ki aaj ke din mujhe kaun kaun se kaam karne chahiye."
     )
 

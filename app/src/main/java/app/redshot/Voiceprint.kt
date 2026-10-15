@@ -75,7 +75,7 @@ object Voiceprint {
     }
 
     /** strict = something else is playing audio on the phone (reel, video, music). */
-    fun accept(d: Double, strict: Boolean): Boolean = d < 0 || d <= (if (strict) base else base + 0.12)
+    fun accept(d: Double, strict: Boolean): Boolean = d < 0 || d <= (if (strict) base + 0.12 else 0.8)
 
     /** The owner's own confident speech slowly sharpens the print. */
     fun adapt(v: DoubleArray, d: Double) {

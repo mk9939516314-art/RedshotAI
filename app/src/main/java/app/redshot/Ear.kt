@@ -180,14 +180,14 @@ class Ear(
             val hi = wakeHi.toString().let { it.replace(" ", "").contains("रेडशॉट") }
             val level = (if (en) 1 else 0) + (if (hi) 1 else 0)
             // owner-voice distance for this sentence: -1 = nothing enrolled, -2 = too short to judge
-            val emb: DoubleArray? = spkSum?.takeIf { spkFrames >= 80 }
+            val emb: DoubleArray? = spkSum?.takeIf { spkFrames >= 60 }
             var dist = -1.0
             if (Voiceprint.enrolled) dist = if (emb != null) Voiceprint.dist(emb) else -2.0
             resetAll()
             val count = frames.size
             if (enrollWanted > 0) {
                 RedshotService.spkFramesLast = spkFrames
-                if (emb != null && spkFrames >= 120) {
+                if (emb != null && spkFrames >= 60) {
                     Voiceprint.addEnroll(emb)
                     enrollWanted--
                     enrollFails = 0
@@ -196,8 +196,8 @@ class Ear(
                     RedshotService.enrollMsg = ""
                 } else if (count >= MIN_FRAMES) {
                     enrollFails++
-                    RedshotService.enrollMsg = if (spkFrames == 0) "Awaaz ka fingerprint nahi ban raha (model se output nahi aaya)" else "Vakya bahut chhota tha, poora bol"
-                    if (enrollFails >= 4 && spkFrames == 0) { enrollWanted = 0; RedshotService.enrollMsg = "Awaaz sikhna phone pe nahi chal paaya. Baaki sab normal chalega." }
+                    RedshotService.enrollMsg = if (spkFrames == 0) "Awaaz ka fingerprint nahi ban raha (model se output nahi aaya)" else "Vakya chhota tha ya Hindi mein nahi bola, Hindi mein poora bol"
+                    if (enrollFails >= 5) { enrollWanted = 0; RedshotService.enrollMsg = "Awaaz sikhna phone pe nahi chal paaya. Baaki sab normal chalega." }
                 }
             } else if (count >= MIN_FRAMES) {
                 val pcm = ShortArray(count * FRAME)
@@ -225,9 +225,9 @@ class Ear(
                 }
                 if (got < FRAME) { Thread.sleep(20); continue }
 
-                if (enrollWanted > 0 && System.currentTimeMillis() - enrollLastAt > 120_000) {
+                if (enrollWanted > 0 && System.currentTimeMillis() - enrollLastAt > 75_000) {
                     enrollWanted = 0
-                    RedshotService.enrollMsg = "Awaaz sikhna beech mein ruk gaya (2 min). Dobara shuru kar sakta hai."
+                    RedshotService.enrollMsg = "Awaaz sikhna beech mein ruk gaya. Dobara shuru kar sakta hai."
                 }
                 val sink = liveSink
                 if (sink != null) {
