@@ -62,6 +62,9 @@ class Ear(
     @Volatile private var bargeUntil = 0L
     /** how many enrollment sentences are still wanted (0 = not enrolling) */
     @Volatile var enrollWanted = 0
+        set(v) { field = v; enrollFails = 0; enrollLastAt = System.currentTimeMillis() }
+    @Volatile private var enrollFails = 0
+    @Volatile private var enrollLastAt = 0L
 
     /** While Redshot itself is talking the ear stays shut (plus a short tail so it never hears its own echo). */
     fun setPaused(p: Boolean) {
@@ -183,10 +186,18 @@ class Ear(
             resetAll()
             val count = frames.size
             if (enrollWanted > 0) {
+                RedshotService.spkFramesLast = spkFrames
                 if (emb != null && spkFrames >= 120) {
                     Voiceprint.addEnroll(emb)
                     enrollWanted--
+                    enrollFails = 0
+                    enrollLastAt = System.currentTimeMillis()
                     RedshotService.enrollHave = Voiceprint.count
+                    RedshotService.enrollMsg = ""
+                } else if (count >= MIN_FRAMES) {
+                    enrollFails++
+                    RedshotService.enrollMsg = if (spkFrames == 0) "Awaaz ka fingerprint nahi ban raha (model se output nahi aaya)" else "Vakya bahut chhota tha, poora bol"
+                    if (enrollFails >= 4 && spkFrames == 0) { enrollWanted = 0; RedshotService.enrollMsg = "Awaaz sikhna phone pe nahi chal paaya. Baaki sab normal chalega." }
                 }
             } else if (count >= MIN_FRAMES) {
                 val pcm = ShortArray(count * FRAME)
@@ -204,6 +215,7 @@ class Ear(
 
         try {
             while (alive) {
+              try {
                 val buf = ShortArray(FRAME)
                 var got = 0
                 while (got < FRAME && alive) {
@@ -213,6 +225,10 @@ class Ear(
                 }
                 if (got < FRAME) { Thread.sleep(20); continue }
 
+                if (enrollWanted > 0 && System.currentTimeMillis() - enrollLastAt > 120_000) {
+                    enrollWanted = 0
+                    RedshotService.enrollMsg = "Awaaz sikhna beech mein ruk gaya (2 min). Dobara shuru kar sakta hai."
+                }
                 val sink = liveSink
                 if (sink != null) {
                     if (!wasLive) {
@@ -295,11 +311,21 @@ class Ear(
                     // early hint: the spotter already sees "red"/"shot" -> let the service pre-open the live connection
                     if (++hintTick % 8 == 0 && recEn != null && System.currentTimeMillis() - hintAt > 4000) {
                         val part = try { JSONObject(recEn?.partialResult ?: "{}").optString("partial", "") } catch (e: Exception) { "" }
-                        if (part.contains("red") || part.contains("shot")) { hintAt = System.currentTimeMillis(); onHint() }
+                        if (part.replace(" ", "").contains("redshot")) { hintAt = System.currentTimeMillis(); onHint() }
                     }
                     quietRun = if (rms > threshold * 0.6) 0 else quietRun + 1
                     if (quietRun >= END_FRAMES || frames.size >= MAX_FRAMES) finish()
                 }
+              } catch (e: InterruptedException) {
+                throw e
+              } catch (t: Throwable) {
+                // never let one bad frame kill the ears
+                RedshotService.earError = t.javaClass.simpleName + ": " + (t.message ?: "")
+                try { resetAll() } catch (x: Throwable) {}
+                frames.clear(); preroll.clear(); text.setLength(0)
+                speaking = false; loudRun = 0; quietRun = 0
+                Thread.sleep(20)
+              }
             }
         } catch (e: InterruptedException) {
             // stopping

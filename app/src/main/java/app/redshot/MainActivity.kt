@@ -250,10 +250,12 @@ class MainActivity : Activity() {
 
         // enrollment
         val enrolling = RedshotService.enrolling
-        enrollBox.visibility = if (enrolling) View.VISIBLE else View.GONE
+        enrollBox.visibility = if (enrolling || RedshotService.enrollMsg.isNotBlank()) View.VISIBLE else View.GONE
+        if (!enrolling && RedshotService.enrollMsg.isNotBlank()) enrollText.text = RedshotService.enrollMsg
         if (enrolling) {
             val have = RedshotService.enrollHave.coerceIn(0, 5)
-            enrollText.text = "Ye vakya normal awaaz mein poora bol:\n\n\"" + enrollLines[have] + "\"\n\n(" + RedshotService.enrollHave + "/6 ho gaye)"
+            enrollText.text = "Ye vakya normal awaaz mein poora bol:\n\n\"" + enrollLines[have] + "\"\n\n(" + RedshotService.enrollHave + "/6 ho gaye)" +
+                (if (RedshotService.enrollMsg.isNotBlank()) "\n\n" + RedshotService.enrollMsg else "")
             enrollBar.progress = RedshotService.enrollHave
         }
 
@@ -281,6 +283,8 @@ class MainActivity : Activity() {
                 "\nmeri awaaz distance: " + (if (RedshotService.spkDist >= 0) "%.2f".format(RedshotService.spkDist) else "-") +
                 " (limit " + "%.2f".format(Voiceprint.base) + ")" +
                 "\nmind: " + RedshotService.mindLast +
+                "\near error: " + RedshotService.earError.ifBlank { "-" } +
+                "\nspk frames: " + RedshotService.spkFramesLast + " model: " + RedshotService.spkReady +
                 "\nbrain: " + brain
         }
     }

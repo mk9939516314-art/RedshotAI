@@ -1,0 +1,31 @@
+name: Speaker eval
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install
+        run: |
+          sudo apt-get update -qq; sudo apt-get install -y -qq ffmpeg espeak-ng >/dev/null
+          pip install vosk gTTS numpy 2>&1 | tail -3
+          curl -L --fail --retry 3 -o hi.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+          unzip -q hi.zip && mv vosk-model-small-hi-0.22 model-hi
+          curl -L --fail --retry 3 -o spk.zip https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip
+          unzip -q spk.zip && mv vosk-model-spk-0.4 model-spk
+      - name: Run eval
+        run: python tools/spk_eval.py > /tmp/out.txt 2>&1 || (echo "EXIT FAILED" >> /tmp/out.txt)
+      - name: Publish result to branch
+        if: always()
+        run: |
+          cp /tmp/out.txt spk_result.txt
+          git config user.name ci; git config user.email ci@example.com
+          git checkout --orphan eval-results2
+          git rm -rf . -q || true
+          git add spk_result.txt
+          git commit -q -m "spk result"
+          git push -f origin eval-results2

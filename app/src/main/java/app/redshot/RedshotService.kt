@@ -39,6 +39,9 @@ class RedshotService : Service() {
         @Volatile var spkReady: Boolean = false
         @Volatile var enrollHave: Int = 0
         @Volatile var mindLast: String = "-"
+        @Volatile var earError: String = ""
+        @Volatile var spkFramesLast: Int = 0
+        @Volatile var enrollMsg: String = ""
         @Volatile var instance: RedshotService? = null
 
         fun startEnroll(sentences: Int) {
@@ -382,6 +385,13 @@ class RedshotService : Service() {
 
     private fun liveWatchdog() {
         try {
+            // the ears must never stay dead: restart them if the thread ended
+            if (ear?.running == false) {
+                log("error", "ear restart: " + earError + " state=" + state)
+                ear?.stop()
+                ear = Ear(this, { text, pcm, wake, dist -> onHeard(text, pcm, wake, dist) }, { s -> state = s },
+                    { prewarm() }, { onUserVoice() }, { onBarge() }).also { it.start() }
+            }
             val now = System.currentTimeMillis()
             val s = session
             if (!liveActive) {
