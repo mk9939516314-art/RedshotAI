@@ -1,0 +1,79 @@
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node tdnn6.relu is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node tdnn6.batchnorm is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node output.affine is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node output.log-softmax is never used to compute any output.
+NO SPK for gtts_en 0
+NO SPK for gtts_en 1
+NO SPK for gtts_en 2
+NO SPK for gtts_en 3
+NO SPK for gtts_en 4
+NO SPK for gtts_en 5
+NO SPK for gtts_en 6
+NO SPK for gtts_en 7
+NO SPK for gtts_hi 0
+NO SPK for gtts_hi 1
+NO SPK for gtts_hi 2
+NO SPK for gtts_hi 3
+NO SPK for gtts_hi 4
+NO SPK for gtts_hi 5
+NO SPK for gtts_hi 6
+NO SPK for gtts_hi 7
+NO SPK for es_m1 0
+NO SPK for es_m1 1
+NO SPK for es_m1 2
+NO SPK for es_m1 3
+NO SPK for es_m1 4
+NO SPK for es_m1 5
+NO SPK for es_m1 6
+NO SPK for es_m1 7
+NO SPK for es_m3 0
+NO SPK for es_m3 1
+NO SPK for es_m3 2
+NO SPK for es_m3 3
+NO SPK for es_m3 4
+NO SPK for es_m3 5
+NO SPK for es_m3 6
+NO SPK for es_m3 7
+NO SPK for es_m7 0
+NO SPK for es_m7 1
+NO SPK for es_m7 2
+NO SPK for es_m7 3
+NO SPK for es_m7 4
+NO SPK for es_m7 5
+NO SPK for es_m7 6
+NO SPK for es_m7 7
+NO SPK for es_f2 0
+NO SPK for es_f2 1
+NO SPK for es_f2 2
+NO SPK for es_f2 3
+NO SPK for es_f2 4
+NO SPK for es_f2 5
+NO SPK for es_f2 6
+NO SPK for es_f2 7
+NO SPK for es_f4 0
+NO SPK for es_f4 1
+NO SPK for es_f4 2
+NO SPK for es_f4 3
+NO SPK for es_f4 4
+NO SPK for es_f4 5
+NO SPK for es_f4 6
+NO SPK for es_f4 7
+NO SPK for es_hi 0
+NO SPK for es_hi 1
+NO SPK for es_hi 2
+NO SPK for es_hi 3
+NO SPK for es_hi 4
+NO SPK for es_hi 5
+NO SPK for es_hi 6
+NO SPK for es_hi 7
+
+=== distances: enroll on sentences 0-4 (mean), test on 5-7 ===
+Traceback (most recent call last):
+  File "/home/runner/work/RedshotAI/RedshotAI/tools/spk_eval.py", line 74, in <module>
+    intra = {n: max(cd(means[n], e[0][0]) for e in E[n][:4]) for n in E}
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/RedshotAI/RedshotAI/tools/spk_eval.py", line 74, in <dictcomp>
+    intra = {n: max(cd(means[n], e[0][0]) for e in E[n][:4]) for n in E}
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: max() arg is an empty sequence
+EXIT FAILED

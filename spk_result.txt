@@ -1,0 +1,78 @@
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node tdnn6.relu is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node tdnn6.batchnorm is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node output.affine is never used to compute any output.
+WARNING (VoskAPI:Check():nnet-nnet.cc:789) Node output.log-softmax is never used to compute any output.
+gtts_en 0 frames 450 dur_frames 549
+gtts_en 1 frames 378 dur_frames 530
+gtts_en 2 frames 465 dur_frames 549
+gtts_en 3 frames 390 dur_frames 542
+gtts_en 4 frames 483 dur_frames 561
+gtts_en 5 frames 441 dur_frames 532
+gtts_en 6 frames 192 dur_frames 508
+gtts_en 7 frames 408 dur_frames 501
+gtts_hi 0 frames 450 dur_frames 537
+gtts_hi 1 frames 411 dur_frames 535
+gtts_hi 2 frames 474 dur_frames 552
+gtts_hi 3 frames 378 dur_frames 540
+gtts_hi 4 frames 453 dur_frames 547
+gtts_hi 5 frames 450 dur_frames 554
+gtts_hi 6 frames 195 dur_frames 492
+gtts_hi 7 frames 432 dur_frames 513
+es_m1 0 frames 228 dur_frames 505
+es_m1 1 frames 75 dur_frames 427
+es_m1 2 frames 132 dur_frames 490
+es_m1 3 frames 225 dur_frames 500
+es_m1 4 frames 213 dur_frames 523
+es_m1 5 frames 210 dur_frames 499
+es_m1 6 frames 108 dur_frames 450
+es_m1 7 frames 66 dur_frames 438
+es_m3 0 frames 231 dur_frames 483
+es_m3 1 frames 78 dur_frames 405
+es_m3 2 frames 63 dur_frames 474
+es_m3 3 frames 249 dur_frames 491
+es_m3 4 frames 249 dur_frames 496
+es_m3 5 frames 195 dur_frames 477
+es_m3 6 frames 126 dur_frames 439
+es_m3 7 frames 63 dur_frames 416
+es_m7 0 frames 201 dur_frames 503
+es_m7 1 frames 75 dur_frames 427
+es_m7 2 frames 135 dur_frames 490
+es_m7 3 frames 231 dur_frames 499
+es_m7 4 frames 132 dur_frames 523
+es_m7 5 frames 210 dur_frames 499
+es_m7 6 frames 84 dur_frames 450
+es_m7 7 frames 90 dur_frames 436
+es_f2 0 frames 162 dur_frames 513
+es_f2 1 frames 111 dur_frames 431
+es_f2 2 frames 273 dur_frames 497
+es_f2 3 frames 309 dur_frames 503
+es_f2 4 frames 165 dur_frames 529
+es_f2 5 frames 237 dur_frames 507
+es_f2 6 frames 87 dur_frames 453
+es_f2 7 frames 189 dur_frames 444
+es_f4 0 frames 123 dur_frames 524
+es_f4 1 frames 57 dur_frames 436
+es_f4 2 frames 243 dur_frames 497
+NO SPK for es_f4 3
+es_f4 4 frames 252 dur_frames 533
+es_f4 5 frames 309 dur_frames 517
+es_f4 6 frames 129 dur_frames 450
+es_f4 7 frames 117 dur_frames 451
+es_hi 0 frames 57 dur_frames 483
+es_hi 1 frames 123 dur_frames 410
+es_hi 2 frames 141 dur_frames 474
+es_hi 3 frames 180 dur_frames 497
+es_hi 4 frames 108 dur_frames 492
+es_hi 5 frames 216 dur_frames 475
+es_hi 6 frames 72 dur_frames 447
+es_hi 7 frames 141 dur_frames 419
+
+=== distances: enroll on sentences 0-4 (mean), test on 5-7 ===
+gtts_en: maxIntra=0.21 same=[0.23 0.13 0.36 0.14] same_noisy15dB=[0.63 0.49 0.85 0.53] other_min=0.15 other_mean=0.60
+gtts_hi: maxIntra=0.12 same=[0.23 0.17 0.37 0.15] same_noisy15dB=[0.66 0.47 0.53 0.46] other_min=0.13 other_mean=0.58
+es_m1: maxIntra=0.15 same=[0.13 0.12 0.23 0.24] same_noisy15dB=[0.37 0.59 0.37 0.4 ] other_min=0.09 other_mean=0.41
+es_m3: maxIntra=0.20 same=[0.07 0.09 0.12 0.22] same_noisy15dB=[0.37 0.41 0.39 0.41] other_min=0.12 other_mean=0.42
+es_m7: maxIntra=0.21 same=[0.15 0.11 0.16 0.24] same_noisy15dB=[0.47 0.53 0.47 0.53] other_min=0.12 other_mean=0.40
+es_f2: maxIntra=0.12 same=[0.15 0.19 0.25 0.16] same_noisy15dB=[0.31 0.42 0.37 0.52] other_min=0.21 other_mean=0.53
+es_f4: maxIntra=0.29 same=[0.14 0.19 0.14] same_noisy15dB=[0.58 0.42 0.56] other_min=0.15 other_mean=0.50
+es_hi: maxIntra=0.23 same=[0.16 0.09 0.15 0.1 ] same_noisy15dB=[0.3  0.43 0.4  0.43] other_min=0.10 other_mean=0.41
