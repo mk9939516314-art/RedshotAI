@@ -10,6 +10,13 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.content.ContentUris
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Settings
@@ -40,9 +47,16 @@ object Executor {
                     null
                 }
                 "alarm" -> {
+                    var hh = a.optInt("hour")
+                    var mm = a.optInt("minute")
+                    if (a.has("in_minutes") && a.optInt("in_minutes") > 0) {
+                        val c = Calendar.getInstance()
+                        c.add(Calendar.MINUTE, a.optInt("in_minutes"))
+                        hh = c.get(Calendar.HOUR_OF_DAY); mm = c.get(Calendar.MINUTE)
+                    }
                     val i = Intent(AlarmClock.ACTION_SET_ALARM)
-                        .putExtra(AlarmClock.EXTRA_HOUR, a.optInt("hour"))
-                        .putExtra(AlarmClock.EXTRA_MINUTES, a.optInt("minute"))
+                        .putExtra(AlarmClock.EXTRA_HOUR, hh)
+                        .putExtra(AlarmClock.EXTRA_MINUTES, mm)
                         .putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("label", "Redshot"))
                         .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                     startBg(ctx, i)
@@ -100,6 +114,19 @@ object Executor {
                     null
                 }
                 "play" -> play(ctx, a.optString("query"), a.optString("app"))
+                "tap_xy" -> {
+                    if (RedshotAccess.instance?.tapPercent(a.optInt("x"), a.optInt("y")) == true) null else "tap nahi hua (accessibility band?)"
+                }
+                "swipe" -> {
+                    if (RedshotAccess.instance?.swipe(a.optString("dir")) == true) null else "swipe nahi hua (accessibility band?)"
+                }
+                "whatsapp_call" -> whatsappCall(ctx, a.optString("contact"), a.optBoolean("video"))
+                "whatsapp_message" -> whatsappMessage(ctx, a.optString("contact"), a.optString("text"))
+                "notify" -> { notify(ctx, a.optString("text")); null }
+                "auto_scroll" -> {
+                    if (a.optBoolean("stop")) AutoScroll.stop() else AutoScroll.start(a.optInt("every_seconds", 20).coerceIn(3, 600))
+                    null
+                }
                 else -> null
             }
         } catch (e: SecurityException) {
@@ -107,6 +134,148 @@ object Executor {
         } catch (e: Exception) {
             "error: " + (e.message ?: e.javaClass.simpleName)
         }
+    }
+
+
+    /** Same as run(), but for tools whose answer is data (read_screen, calendar, notifications). Always returns text for the model. */
+    fun runForResult(ctx: Context, a: JSONObject): String {
+        return try {
+            when (a.optString("type")) {
+                "read_screen" -> {
+                    val w = a.optLong("wait_ms", 700).coerceIn(0, 4000)
+                    if (w > 0) Thread.sleep(w)
+                    val acc = RedshotAccess.instance ?: return "error: accessibility service band hai, isliye screen nahi padh sakta (Settings > Accessibility > Redshot on karo)"
+                    acc.readScreen()
+                }
+                "notifications_read" -> RedshotNotifs.summary(a.optInt("count", 12).coerceIn(1, 40))
+                "calendar" -> calendar(ctx, a.optInt("hours", 48).coerceIn(1, 24 * 14))
+                else -> {
+                    val note = run(ctx, a)
+                    if (note == null) "ok" else "error: $note"
+                }
+            }
+        } catch (e: Exception) {
+            "error: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    fun calendar(ctx: Context, hours: Int): String {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED)
+            return "error: calendar ki permission nahi di (Redshot app kholke allow karo)"
+        val now = System.currentTimeMillis()
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
+            ContentUris.appendId(it, now); ContentUris.appendId(it, now + hours * 3600_000L)
+        }.build()
+        val fmt = SimpleDateFormat("EEE d MMM, h:mm a", Locale.ENGLISH)
+        val sb = StringBuilder()
+        ctx.contentResolver.query(
+            uri,
+            arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.END, CalendarContract.Instances.EVENT_LOCATION),
+            null, null, CalendarContract.Instances.BEGIN + " ASC"
+        )?.use { c ->
+            var n = 0
+            while (c.moveToNext() && n < 30) {
+                n++
+                sb.append("- ").append(fmt.format(Date(c.getLong(1)))).append(" to ").append(fmt.format(Date(c.getLong(2))).substringAfter(", "))
+                    .append(": ").append(c.getString(0) ?: "(no title)")
+                val loc = c.getString(3)
+                if (!loc.isNullOrBlank()) sb.append(" @ ").append(loc)
+                sb.append('\n')
+            }
+        }
+        return if (sb.isEmpty()) "Calendar mein agle $hours ghante mein koi event nahi." else sb.toString()
+    }
+
+    fun notify(ctx: Context, text: String) {
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("redshot_alert", "Redshot yaad dilata hai", NotificationManager.IMPORTANCE_HIGH))
+        val n = android.app.Notification.Builder(ctx, "redshot_alert")
+            .setSmallIcon(R.drawable.ic_redshot)
+            .setContentTitle("Redshot")
+            .setContentText(text)
+            .setStyle(android.app.Notification.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .build()
+        nm.notify((System.currentTimeMillis() % 100000).toInt() + 100, n)
+    }
+
+    // ---------- WhatsApp ----------
+
+    private fun waPackage(ctx: Context): String? {
+        val installed = Apps.list(ctx).map { it.pkg }.toSet()
+        return listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { it in installed }
+    }
+
+    /** Best matching WhatsApp contact data row id for a spoken name, using the voice/video call rows WhatsApp adds to Contacts. */
+    private fun waDataRow(ctx: Context, name: String, mime: String): Long? {
+        var best: Long? = null
+        var bestScore = 0
+        ctx.contentResolver.query(
+            ContactsContract.Data.CONTENT_URI,
+            arrayOf(ContactsContract.Data._ID, ContactsContract.Data.DISPLAY_NAME),
+            ContactsContract.Data.MIMETYPE + "=?", arrayOf(mime), null
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val sc = nameScore(c.getString(1) ?: "", name)
+                if (sc > bestScore) { bestScore = sc; best = c.getLong(0) }
+            }
+        }
+        return if (bestScore >= 40) best else null
+    }
+
+    private fun whatsappCall(ctx: Context, name: String, video: Boolean): String? {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
+            return "contacts ki permission nahi di"
+        val pkg = waPackage(ctx) ?: return "phone mein WhatsApp installed nahi hai"
+        val mime = if (video) "vnd.android.cursor.item/vnd.com.whatsapp.video.call" else "vnd.android.cursor.item/vnd.com.whatsapp.voip.call"
+        val id = waDataRow(ctx, name, mime)
+            ?: return "WhatsApp contacts mein '$name' naam ka koi contact nahi mila (naam thoda alag save ho sakta hai)"
+        val i = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(Uri.parse("content://com.android.contacts/data/$id"), mime)
+            .setPackage(pkg)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startBg(ctx, i)
+        return null
+    }
+
+    private fun whatsappMessage(ctx: Context, name: String, text: String): String? {
+        val pkg = waPackage(ctx) ?: return "phone mein WhatsApp installed nahi hai"
+        var num = name.filter { it.isDigit() || it == '+' }
+        if (num.length < 7) num = resolveContact(ctx, name)?.filter { it.isDigit() || it == '+' } ?: ""
+        if (num.length < 7) return "'$name' ka number contacts mein nahi mila"
+        num = num.removePrefix("+")
+        if (num.length == 10) num = "91$num"
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$num?text=" + Uri.encode(text))).setPackage(pkg)
+        startBg(ctx, i)
+        // wait for the chat to open, then press Send
+        val acc = RedshotAccess.instance ?: return "message likh diya hai par accessibility band hai isliye Send nahi dab paya"
+        for (k in 0 until 8) {
+            Thread.sleep(700)
+            if (acc.tapText("Send") || acc.tapText("भेजें")) return null
+        }
+        return "WhatsApp chat khul gayi aur message likha hai, par Send button nahi mila"
+    }
+
+    // ---------- contact matching ----------
+
+    fun nameScore(display: String, spoken: String): Int {
+        val want = Apps.norm(spoken)
+        val n = Apps.norm(display)
+        if (want.isEmpty() || n.isEmpty()) return 0
+        val keys = HashSet<String>().apply {
+            add(want)
+            for ((_, group) in family) if (group.any { Apps.norm(it) == want }) group.forEach { add(Apps.norm(it)) }
+        }
+        var score = 0
+        val sk = Apps.skel(display)
+        if (sk.length >= 3 && sk == Apps.skel(spoken)) score = 55
+        for (k in keys) {
+            if (n == k) score = maxOf(score, 100)
+            else if (n.startsWith(k)) score = maxOf(score, 80)
+            else if (n.contains(k) && k.length >= 3) score = maxOf(score, 60)
+            else if (k.contains(n) && n.length >= 3) score = maxOf(score, 40)
+        }
+        return score
     }
 
     // ---------- device controls ----------

@@ -94,8 +94,69 @@ class RedshotAccess : AccessibilityService() {
             var x: AccessibilityNodeInfo? = n
             while (x != null && !x.isClickable) x = x.parent
             if (x != null && x.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            // not clickable by itself: tap its centre
+            val r = android.graphics.Rect()
+            n.getBoundsInScreen(r)
+            if (!r.isEmpty && tapAt(r.exactCenterX(), r.exactCenterY())) return true
         }
         return false
+    }
+
+    /** Everything readable on the current screen as plain text ([btn] = clickable). */
+    fun readScreen(maxChars: Int = 3500): String {
+        val root = rootInActiveWindow ?: return "(screen padh nahi paya: koi window active nahi)"
+        val sb = StringBuilder()
+        sb.append("app: ").append(root.packageName ?: currentPackage).append('\n')
+        var count = 0
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (sb.length >= maxChars || count > 220 || depth > 30) return
+            if (!n.isVisibleToUser) return
+            val t = (n.text?.toString() ?: "").trim()
+            val d = (n.contentDescription?.toString() ?: "").trim()
+            val label = if (t.isNotEmpty()) t else d
+            if (label.isNotEmpty() || (n.isClickable && n.childCount == 0)) {
+                count++
+                if (n.isClickable) sb.append("[btn] ")
+                if (n.isEditable) sb.append("[input] ")
+                sb.append(if (label.isNotEmpty()) label.take(160) else "(icon)").append('\n')
+            }
+            for (i in 0 until n.childCount) {
+                val c = n.getChild(i) ?: continue
+                walk(c, depth + 1)
+            }
+        }
+        walk(root, 0)
+        return sb.toString().take(maxChars)
+    }
+
+    fun tapPercent(xp: Int, yp: Int): Boolean {
+        val dm = resources.displayMetrics
+        val x = dm.widthPixels * xp.coerceIn(0, 100) / 100f
+        val y = dm.heightPixels * yp.coerceIn(0, 100) / 100f
+        val p = Path().apply { moveTo(x, y) }
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build()
+        return dispatchGesture(g, null, null)
+    }
+
+    /** dir = where the content moves: up (next reel / more below), down, left, right. */
+    fun swipe(dir: String): Boolean {
+        val dm = resources.displayMetrics
+        val w = dm.widthPixels.toFloat(); val h = dm.heightPixels.toFloat()
+        val (x1, y1, x2, y2) = when (dir) {
+            "down" -> listOf(w * 0.5f, h * 0.3f, w * 0.5f, h * 0.75f)
+            "left" -> listOf(w * 0.8f, h * 0.5f, w * 0.2f, h * 0.5f)
+            "right" -> listOf(w * 0.2f, h * 0.5f, w * 0.8f, h * 0.5f)
+            else -> listOf(w * 0.5f, h * 0.75f, w * 0.5f, h * 0.3f)
+        }
+        val p = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 220)).build()
+        return dispatchGesture(g, null, null)
+    }
+
+    private fun tapAt(x: Float, y: Float): Boolean {
+        val p = Path().apply { moveTo(x, y) }
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build()
+        return dispatchGesture(g, null, null)
     }
 
     fun typeText(text: String): Boolean {

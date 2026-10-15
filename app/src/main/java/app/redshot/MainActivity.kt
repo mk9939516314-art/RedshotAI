@@ -24,6 +24,25 @@ import org.json.JSONObject
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
+    private lateinit var enrollView: TextView
+    private val enrollLines = listOf(
+        "1) Aaj mausam bahut achha hai, main apne ghar se baahar ghoomne ja raha hoon.",
+        "2) Redshot, mummy ko call laga aur phir mere liye ek gaana chala dena.",
+        "3) Kal subah saat baje mujhe uthana, kyunki class jaldi shuru hoti hai.",
+        "4) Open YouTube and search for the latest news about technology and science.",
+        "5) Mera naam Mayank hai aur main Jammu mein padhai karta hoon, bahut mehnat se.",
+        "6) Tum mujhe batao ki aaj ke din mujhe kaun kaun se kaam karne chahiye."
+    )
+    private fun enrollText(): String {
+        if (!RedshotService.enrolling && Voiceprint.enrolled) return "Awaaz yaad ho gayi: " + Voiceprint.count + " vakya."
+        if (!RedshotService.enrolling) return ""
+        val have = RedshotService.enrollHave
+        return "Ab ye vakya ek-ek karke normal awaaz mein bol (poora, thoda tez nahi). Abhi " + have + "/6 ho gaye:\n\n" + enrollLines.getOrElse(have) { enrollLines.last() }
+    }
+    private fun notifOn(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
+        return s.contains(packageName)
+    }
     private val steps = ArrayList<Pair<TextView, () -> Boolean>>()
     private val main = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
@@ -50,7 +69,8 @@ class MainActivity : Activity() {
                     Manifest.permission.RECORD_AUDIO,
                     Manifest.permission.POST_NOTIFICATIONS,
                     Manifest.permission.CALL_PHONE,
-                    Manifest.permission.READ_CONTACTS
+                    Manifest.permission.READ_CONTACTS,
+                    Manifest.permission.READ_CALENDAR
                 ), 1
             )
         }
@@ -64,6 +84,20 @@ class MainActivity : Activity() {
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
             )
         }
+
+        addStep(root, "4. Notification access (sab apps ke notification dekhne ke liye)", { notifOn() }) {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+        addStep(root, "5. Meri awaaz sikhao (sirf teri awaaz pe kaam kare)", { Voiceprint.enrolled }) {
+            if (!RedshotService.spkReady) {
+                status.text = "Awaaz model abhi load ho raha hai, 10 second baad dobara dabao."
+            } else {
+                RedshotService.startEnroll(6)
+                enrollView.text = enrollText()
+            }
+        }
+        enrollView = text("", 15f, "#FFD27D", false)
+        root.addView(enrollView)
 
         status = text("", 14f, "#FFFFFF", false)
         root.addView(status)
@@ -97,12 +131,15 @@ class MainActivity : Activity() {
             val base = label.text.toString().removePrefix("✅ ").removePrefix("❌ ")
             label.text = (if (ok()) "✅ " else "❌ ") + base
         }
+        enrollView.text = enrollText()
         val brain = if (Config.brainUrl(this).contains("REPLACE_BRAIN_URL")) "Brain: address set nahi" else "Brain: " + Config.brainUrl(this)
         status.text = "Kaan: " + RedshotService.state +
             "\nAwaaz level: " + RedshotService.level + " (trigger: " + RedshotService.threshold + ")" +
             "\nSuna: " + RedshotService.heard +
             "\nRasta: " + RedshotService.route +
             "\nLive: " + RedshotService.live +
+            "\nMeri awaaz distance: " + (if (RedshotService.spkDist >= 0) "%.2f".format(RedshotService.spkDist) else "-") + " (limit " + "%.2f".format(Voiceprint.base) + ")" +
+            "\nMind: " + RedshotService.mindLast +
             "\nLive ne suna: " + RedshotService.liveHeard +
             "\nLive ne kaha: " + RedshotService.liveSaid +
             "\nAwaaz (voice): " + RedshotService.voice +

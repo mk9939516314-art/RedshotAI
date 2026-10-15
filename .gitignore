@@ -5,3 +5,5 @@ local.properties
 .idea/
 app/src/main/assets/model-hi/
 app/src/main/assets/model-en/
+
+app/src/main/assets/model-spk/

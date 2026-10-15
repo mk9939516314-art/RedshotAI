@@ -18,10 +18,11 @@ import kotlin.math.sqrt
  */
 class Ear(
     private val ctx: Context,
-    private val onUtterance: (String, ShortArray, Int) -> Unit,
+    private val onUtterance: (String, ShortArray, Int, Double) -> Unit,
     private val onState: (String) -> Unit,
     private val onHint: () -> Unit = {},
-    private val onVoice: () -> Unit = {}
+    private val onVoice: () -> Unit = {},
+    private val onBarge: () -> Unit = {}
 ) {
     companion object {
         private const val SR = 16000
@@ -54,7 +55,13 @@ class Ear(
     }
 
     fun startLive(sink: (ShortArray) -> Unit) { liveSink = sink }
-    fun stopLive() { liveSink = null }
+    fun stopLive() { liveSink = null; liveGate = false }
+
+    /** true while the model is talking: the mic is muted for the model unless the owner clearly talks over it. */
+    @Volatile var liveGate = false
+    @Volatile private var bargeUntil = 0L
+    /** how many enrollment sentences are still wanted (0 = not enrolling) */
+    @Volatile var enrollWanted = 0
 
     /** While Redshot itself is talking the ear stays shut (plus a short tail so it never hears its own echo). */
     fun setPaused(p: Boolean) {
@@ -70,7 +77,13 @@ class Ear(
         val dir = ModelStore.ensure(ctx)
         if (dir == null) { onState("speech model nahi mila"); return }
         val model = try { Model(dir) } catch (e: Throwable) { onState("speech model khula nahi"); return }
-        val rec = Recognizer(model, SR.toFloat())
+        var spkModel: org.vosk.SpeakerModel? = null
+        try {
+            val sd = ModelStore.ensure(ctx, "model-spk")
+            if (sd != null) spkModel = org.vosk.SpeakerModel(sd)
+        } catch (e: Throwable) { spkModel = null }
+        val rec = if (spkModel != null) Recognizer(model, SR.toFloat(), spkModel) else Recognizer(model, SR.toFloat())
+        RedshotService.spkReady = spkModel != null
 
         // Wake-word spotters: tiny vocabulary => very accurate for just "Redshot" (English + Hindi spelling)
         var enModel: Model? = null
@@ -113,12 +126,39 @@ class Ear(
         var speaking = false
         var loudRun = 0
         var quietRun = 0
+        var spkSum: DoubleArray? = null
+        var spkFrames = 0
+        val zero = ShortArray(FRAME)
+        var lframes = 0
+        var lquiet = 0
+        var lchecked = false
+        var lmute = false
+        var bargeRun = 0
         var hintTick = 0
         var hintAt = 0L
         var wasLive = false
 
+        fun grab(json: String): String {
+            try {
+                val o = JSONObject(json)
+                val v = Voiceprint.parseVec(o.optJSONArray("spk"))
+                val fr = o.optInt("spk_frames", 0)
+                if (v != null && fr > 0) {
+                    var n = 0.0
+                    for (x in v) n += x * x
+                    n = sqrt(n)
+                    if (n > 0) {
+                        val sum = spkSum ?: DoubleArray(v.size).also { spkSum = it }
+                        for (i in v.indices) sum[i] += v[i] / n * fr
+                        spkFrames += fr
+                    }
+                }
+                return o.optString("text", "").trim()
+            } catch (e: Exception) { return "" }
+        }
+
         fun feed(f: ShortArray) {
-            if (rec.acceptWaveForm(f, f.size)) text.append(' ').append(parse(rec.result))
+            if (rec.acceptWaveForm(f, f.size)) text.append(' ').append(grab(rec.result))
             recEn?.let { if (it.acceptWaveForm(f, f.size)) wakeEn.append(' ').append(parse(it.result)) }
             recHiWake?.let { if (it.acceptWaveForm(f, f.size)) wakeHi.append(' ').append(parse(it.result)) }
         }
@@ -126,21 +166,34 @@ class Ear(
         fun resetAll() {
             rec.reset(); recEn?.reset(); recHiWake?.reset()
             wakeEn.setLength(0); wakeHi.setLength(0)
+            spkSum = null; spkFrames = 0
         }
 
         fun finish() {
-            text.append(' ').append(parse(rec.finalResult))
+            text.append(' ').append(grab(rec.finalResult))
             recEn?.let { wakeEn.append(' ').append(parse(it.finalResult)) }
             recHiWake?.let { wakeHi.append(' ').append(parse(it.finalResult)) }
             val en = wakeEn.toString().replace(" ", "").contains("redshot")
             val hi = wakeHi.toString().let { it.replace(" ", "").contains("रेडशॉट") }
             val level = (if (en) 1 else 0) + (if (hi) 1 else 0)
+            // owner-voice distance for this sentence: -1 = nothing enrolled, -2 = too short to judge
+            val emb: DoubleArray? = spkSum?.takeIf { spkFrames >= 80 }
+            var dist = -1.0
+            if (Voiceprint.enrolled) dist = if (emb != null) Voiceprint.dist(emb) else -2.0
             resetAll()
             val count = frames.size
-            if (count >= MIN_FRAMES) {
+            if (enrollWanted > 0) {
+                if (emb != null && spkFrames >= 120) {
+                    Voiceprint.addEnroll(emb)
+                    enrollWanted--
+                    RedshotService.enrollHave = Voiceprint.count
+                }
+            } else if (count >= MIN_FRAMES) {
                 val pcm = ShortArray(count * FRAME)
                 for (i in 0 until count) System.arraycopy(frames[i], 0, pcm, i * FRAME, FRAME)
-                onUtterance(text.toString().trim(), pcm, level)
+                RedshotService.spkDist = dist
+                if (emb != null && dist >= 0) Voiceprint.adapt(emb, dist)
+                onUtterance(text.toString().trim(), pcm, level, dist)
             }
             frames.clear()
             text.setLength(0)
@@ -166,11 +219,48 @@ class Ear(
                         wasLive = true
                         resetAll(); frames.clear(); preroll.clear(); text.setLength(0)
                         speaking = false; loudRun = 0; quietRun = 0
+                        lframes = 0; lquiet = 0; lchecked = false; lmute = false; bargeRun = 0
                     }
                     val r = rms(buf)
                     RedshotService.level = r.toInt()
-                    if (r > maxOf(floor * 3.0, 350.0)) onVoice() else floor = (floor * 0.98 + r * 0.02).coerceIn(60.0, 1500.0)
-                    sink(buf)
+                    val vthr = maxOf(floor * 3.0, 350.0)
+                    val voiced = r > vthr
+                    if (voiced) onVoice() else floor = (floor * 0.98 + r * 0.02).coerceIn(60.0, 1500.0)
+
+                    // rolling check of whose voice it is (first ~1 s of every sentence)
+                    if (Voiceprint.enrolled && !liveGate) {
+                        if (voiced) { lframes++; lquiet = 0 } else lquiet++
+                        if (lframes > 0) rec.acceptWaveForm(buf, buf.size)
+                        if (!lchecked && lframes >= 50) {
+                            lchecked = true
+                            val fr = grab(rec.finalResult)
+                            val emb = spkSum?.takeIf { spkFrames >= 60 }
+                            if (emb != null) {
+                                val d = Voiceprint.dist(emb)
+                                RedshotService.spkDist = d
+                                if (d >= 0 && !Voiceprint.accept(d, false)) lmute = true
+                                else if (d >= 0) Voiceprint.adapt(emb, d)
+                            }
+                            spkSum = null; spkFrames = 0
+                        }
+                        if (lquiet > 35) { lframes = 0; lchecked = false; lmute = false; rec.reset(); spkSum = null; spkFrames = 0 }
+                    }
+
+                    var out = buf
+                    if (liveGate && System.currentTimeMillis() > bargeUntil) {
+                        // model is talking: mic stays closed unless the owner clearly talks over it
+                        out = zero
+                        bargeRun = if (r > 1500.0) bargeRun + 1 else 0
+                        if (bargeRun >= 8) {
+                            bargeUntil = System.currentTimeMillis() + 4000
+                            bargeRun = 0
+                            onBarge()
+                            out = buf
+                        }
+                    } else if (lmute) {
+                        out = zero
+                    }
+                    sink(out)
                     continue
                 }
                 if (wasLive) { wasLive = false; resetAll() }
@@ -218,6 +308,7 @@ class Ear(
             audio.release()
             rec.close()
             recEn?.close(); recHiWake?.close()
+            try { spkModel?.close() } catch (e: Throwable) {}
             enModel?.close()
             model.close()
         }

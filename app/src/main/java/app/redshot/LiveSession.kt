@@ -75,6 +75,9 @@ class LiveSession(private val host: Host) {
         })
     }
 
+    /** Owner talked over the model: cut its voice right now. */
+    fun cutPlayback() { player.flush() }
+
     fun close() {
         try { ws?.close(1000, "bye") } catch (e: Exception) {}
         finish("closed by phone")
@@ -153,6 +156,8 @@ class LiveSession(private val host: Host) {
             if (sc.optBoolean("turnComplete")) host.onTurnComplete()
         }
 
+        if (m.has("goAway")) { try { ws?.close(1000, "goAway") } catch (e: Exception) {}; finish("server goAway") }
+
         m.optJSONObject("toolCall")?.optJSONArray("functionCalls")?.let { calls -> runTools(calls) }
     }
 
@@ -227,7 +232,7 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build()
             )
-            .setBufferSizeInBytes(maxOf(min, rate / 2))
+            .setBufferSizeInBytes(maxOf(min, rate * 4))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
@@ -238,26 +243,51 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
     }
 
     private fun loop() {
+        val pre = ArrayList<ByteArray>()
+        var preBytes = 0
+        var firstAt = 0L
         while (running) {
             try {
                 val b = q.poll(150, TimeUnit.MILLISECONDS)
                 if (b == null) {
+                    // short reply that never reached the prebuffer size: play what we have
+                    if (pre.isNotEmpty() && System.currentTimeMillis() - firstAt > 220) {
+                        playChunks(pre); pre.clear(); preBytes = 0
+                    }
                     val t = track
-                    if (speaking && t != null && t.playbackHeadPosition >= written) {
+                    if (speaking && t != null && pre.isEmpty() && t.playbackHeadPosition >= written) {
                         speaking = false
                         onSpeaking(false)
                     }
                     continue
                 }
                 if (!speaking) { speaking = true; onSpeaking(true) }
-                val t = ensureTrack()
-                t.write(b, 0, b.size - b.size % 2)
-                written += b.size / 2
+                val t0 = track
+                if (t0 == null || t0.playbackHeadPosition >= written) {
+                    // (re)starting after silence: build a small cushion first so network jitter never makes it stutter
+                    if (pre.isEmpty()) firstAt = System.currentTimeMillis()
+                    pre.add(b); preBytes += b.size
+                    if (preBytes >= 14400 || System.currentTimeMillis() - firstAt > 220) {
+                        playChunks(pre); pre.clear(); preBytes = 0
+                    }
+                } else {
+                    if (pre.isNotEmpty()) { playChunks(pre); pre.clear(); preBytes = 0 }
+                    playChunks(listOf(b))
+                }
             } catch (e: InterruptedException) {
                 return
             } catch (e: Exception) {
                 // track was released by flush(); next chunk makes a new one
+                pre.clear(); preBytes = 0
             }
+        }
+    }
+
+    private fun playChunks(list: List<ByteArray>) {
+        val t = ensureTrack()
+        for (b in list) {
+            t.write(b, 0, b.size - b.size % 2)
+            written += b.size / 2
         }
     }
 }

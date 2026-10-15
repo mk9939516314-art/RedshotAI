@@ -54,6 +54,22 @@ jobs:
           unzip -q en.zip -d tmpmodel2
           mv tmpmodel2/vosk-model-small-en-us-0.15 app/src/main/assets/model-en
 
+      - name: Cache speaker (voice-print) model
+        id: spkcache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/model-spk
+          key: vosk-model-spk-0.4
+
+      - name: Download speaker model
+        if: steps.spkcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/src/main/assets tmpmodel3
+          curl -L --fail --retry 3 -o spk.zip https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip
+          unzip -q spk.zip -d tmpmodel3
+          mv tmpmodel3/vosk-model-spk-0.4 app/src/main/assets/model-spk
+          ls -la app/src/main/assets/model-spk
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
