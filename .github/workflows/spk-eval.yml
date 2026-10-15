@@ -18,14 +18,16 @@ jobs:
           curl -L --fail --retry 3 -o spk.zip https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip
           unzip -q spk.zip && mv vosk-model-spk-0.4 model-spk
       - name: Run eval
-        run: python tools/spk_eval.py > /tmp/out.txt 2>&1 || (echo "EXIT FAILED" >> /tmp/out.txt)
+        run: |
+          (MODE=free python tools/spk_eval.py > /tmp/out.txt 2>&1 || echo "EXIT FAILED" >> /tmp/out.txt)
+          (MODE=unk python tools/spk_eval.py > /tmp/out2.txt 2>&1 || echo "EXIT FAILED" >> /tmp/out2.txt)
       - name: Publish result to branch
         if: always()
         run: |
-          cp /tmp/out.txt spk_result.txt
+          cp /tmp/out.txt spk_result.txt; cp /tmp/out2.txt spk_result_unk.txt
           git config user.name ci; git config user.email ci@example.com
           git checkout --orphan eval-results2
           git rm -rf . -q || true
-          git add spk_result.txt
+          git add spk_result.txt spk_result_unk.txt
           git commit -q -m "spk result"
           git push -f origin eval-results2

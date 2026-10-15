@@ -39,8 +39,10 @@ def noisy(x, snr):
 
 model = Model("model-hi"); spk = SpkModel("model-spk")
 
+MODE = os.environ.get("MODE","free")
 def embed(pcm):
-    r = KaldiRecognizer(model, 16000); r.SetSpkModel(spk)
+    r = KaldiRecognizer(model, 16000, '["[unk]"]') if MODE=="unk" else KaldiRecognizer(model, 16000)
+    r.SetSpkModel(spk)
     b = pcm.tobytes(); acc = None; frames = 0
     def take(j):
         nonlocal acc, frames
@@ -64,13 +66,14 @@ for name, (kind, voice) in SPEAKERS.items():
         f = f"a/{name}_{i}.wav"; tts(s, f, kind, voice)
         pcm = read(f)
         E[name].append((embed(pcm), embed(noisy(pcm, 15))))
-        print(name, i, "frames", E[name][-1][0][1], flush=True)
+        if E[name][-1][0][0] is None: E[name].pop(); print("NO SPK for", name, i); continue
+        print(name, i, "frames", E[name][-1][0][1], "dur_frames", len(pcm)//160, flush=True)
 
 print("\n=== distances: enroll on sentences 0-4 (mean), test on 5-7 ===")
-means = {n: sum(e[0][0] for e in E[n][:5]) for n in E}
-intra = {n: max(cd(means[n], e[0][0]) for e in E[n][:5]) for n in E}
+means = {n: sum(e[0][0] for e in E[n][:4]) for n in E}
+intra = {n: max(cd(means[n], e[0][0]) for e in E[n][:4]) for n in E}
 for n in E:
-    same = [cd(means[n], e[0][0]) for e in E[n][5:]]
-    same_noisy = [cd(means[n], e[1][0]) for e in E[n][5:]]
-    others = [cd(means[n], e[0][0]) for m in E if m != n for e in E[m][5:]]
+    same = [cd(means[n], e[0][0]) for e in E[n][4:]]
+    same_noisy = [cd(means[n], e[1][0]) for e in E[n][4:]]
+    others = [cd(means[n], e[0][0]) for m in E if m != n for e in E[m][4:]]
     print(f"{n}: maxIntra={intra[n]:.2f} same={np.round(same,2)} same_noisy15dB={np.round(same_noisy,2)} other_min={min(others):.2f} other_mean={np.mean(others):.2f}")
