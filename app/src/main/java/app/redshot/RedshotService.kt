@@ -610,7 +610,17 @@ class RedshotService : Service() {
                 }
                 in SERVER_TOOLS -> {
                     val r = Brain.post(this@RedshotService, "device/tool", JSONObject().put("name", name).put("args", args), 40000)
-                    r?.optString("result", "")?.ifBlank { null } ?: "error: $name nahi chal paya (${Brain.lastError})"
+                    val txt = r?.optString("result", "")?.ifBlank { null } ?: "error: $name nahi chal paya (${Brain.lastError})"
+                    when {
+                        txt.startsWith("IMG:") -> try {
+                            val f = java.io.File(Pro.root(), "gen_" + System.currentTimeMillis() / 1000 + ".jpg")
+                            f.parentFile?.mkdirs()
+                            f.writeBytes(android.util.Base64.decode(txt.substring(4), android.util.Base64.DEFAULT))
+                            "ok: image bani ${f.path}. file_open se dikha sakta hai."
+                        } catch (e: Exception) { "error: image save nahi hui: ${e.message}" }
+                        txt.startsWith("IMGURL:") -> Pro2.run(this@RedshotService, "download_file", JSONObject().put("url", txt.substring(7)).put("path", "gen_" + System.currentTimeMillis() / 1000 + ".jpg")) ?: "error"
+                        else -> txt
+                    }
                 }
                 "mute_listening" -> {
                     muted = true
