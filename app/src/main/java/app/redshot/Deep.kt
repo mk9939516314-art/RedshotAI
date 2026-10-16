@@ -34,12 +34,7 @@ object Deep {
             gesture((0 until arr.length()).map { val o = arr.getJSONObject(it)
                 doubleArrayOf(o.optDouble("x1"), o.optDouble("y1"), o.optDouble("x2", o.optDouble("x1")), o.optDouble("y2", o.optDouble("y1")), o.optDouble("start_ms", 0.0), o.optDouble("ms", 300.0)) })
         }
-        "multi_tap" -> {
-            val pts = a.optJSONArray("points") ?: JSONArray()
-            val acc = RedshotAccess.instance ?: return "error: accessibility band hai"
-            for (i in 0 until pts.length()) { val p = pts.getJSONObject(i); acc.tapPercent(p.optInt("x"), p.optInt("y")); Thread.sleep(a.optLong("interval_ms", 150)) }
-            "ok: ${pts.length()} tap"
-        }
+        "multi_tap" -> multiTap(a)
         "see_screen" -> seeScreen()
         "macro_define" -> macroDefine(ctx, a)
         "macro_run" -> macroRun(ctx, a)
@@ -48,6 +43,13 @@ object Deep {
         "macro_status" -> lastStatus
         "macro_stop" -> { cancel = true; "ok: macro rok rahi hu" }
         else -> null
+    }
+
+    private fun multiTap(a: JSONObject): String {
+        val pts = a.optJSONArray("points") ?: JSONArray()
+        val acc = RedshotAccess.instance ?: return "error: accessibility band hai"
+        for (i in 0 until pts.length()) { val p = pts.getJSONObject(i); acc.tapPercent(p.optInt("x"), p.optInt("y")); Thread.sleep(a.optLong("interval_ms", 150)) }
+        return "ok: ${pts.length()} tap"
     }
 
     private fun gesture(strokes: List<DoubleArray>): String {
