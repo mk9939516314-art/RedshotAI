@@ -81,6 +81,13 @@ class LiveSession(private val host: Host) {
         if (ready) ws?.send(msg) else pending.add(msg)
     }
 
+    /** One screenshot/camera frame so the model can actually SEE (games, canvas apps, images). */
+    fun sendImage(jpeg: ByteArray) {
+        val b64 = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+        val msg = JSONObject().put("realtimeInput", JSONObject().put("video", JSONObject().put("mimeType", "image/jpeg").put("data", b64))).toString()
+        if (ready) ws?.send(msg) else pending.add(msg)
+    }
+
     /** Owner talked over the model: cut its voice right now. */
     fun cutPlayback() { player.flush() }
 
@@ -227,7 +234,7 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
         val t = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
@@ -242,6 +249,17 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
+        try { t.setVolume(1.0f) } catch (e: Exception) {}
+        try {
+            // pin the output: loud speaker (or a connected headset), whatever the phone's call/route state is
+            val c = RedshotService.instance
+            val am = c?.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+            val outs = am?.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)?.toList() ?: emptyList()
+            val pick = outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET }
+                ?: outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            if (pick != null) t.preferredDevice = pick
+        } catch (e: Exception) {}
         t.play()
         track = t
         written = 0
@@ -263,6 +281,8 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
                     val t = track
                     if (speaking && t != null && pre.isEmpty() && t.playbackHeadPosition >= written) {
                         speaking = false
+                        // stop the track so the phone does not think music is playing (keeps the mic logic honest)
+                        try { t.pause() } catch (e: Exception) {}
                         onSpeaking(false)
                     }
                     continue
@@ -291,6 +311,7 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
 
     private fun playChunks(list: List<ByteArray>) {
         val t = ensureTrack()
+        if (t.playState != AudioTrack.PLAYSTATE_PLAYING) t.play()
         for (b in list) {
             t.write(b, 0, b.size - b.size % 2)
             written += b.size / 2

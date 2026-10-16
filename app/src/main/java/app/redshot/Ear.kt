@@ -3,6 +3,7 @@ package app.redshot
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
@@ -116,7 +117,7 @@ class Ear(
 
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION, SR,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION, SR,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, FRAME * 2 * 8)
         )
@@ -151,6 +152,8 @@ class Ear(
         var hintTick = 0
         var hintAt = 0L
         var wasLive = false
+        var callTick = 0
+        var callPaused = false
 
         fun grab(json: String): String {
             try {
@@ -227,6 +230,14 @@ class Ear(
         try {
             while (alive) {
               try {
+                // a phone / WhatsApp / Meet call is running: let go of the mic completely so the other app owns it
+                if (++callTick % 25 == 0) {
+                    val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val inCall = am.mode == AudioManager.MODE_IN_CALL || am.mode == AudioManager.MODE_IN_COMMUNICATION || am.mode == AudioManager.MODE_CALL_SCREENING
+                    if (inCall && !callPaused) { callPaused = true; try { audio.stop() } catch (e: Exception) {}; onState("call chal rahi hai, mic chhod diya") }
+                    else if (!inCall && callPaused) { callPaused = false; try { audio.startRecording() } catch (e: Exception) {}; onState("sun raha hoon") }
+                }
+                if (callPaused) { Thread.sleep(150); callTick += 24; continue }
                 val buf = ShortArray(FRAME)
                 var got = 0
                 while (got < FRAME && alive) {

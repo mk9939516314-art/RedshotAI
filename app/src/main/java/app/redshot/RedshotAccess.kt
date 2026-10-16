@@ -153,7 +153,7 @@ class RedshotAccess : AccessibilityService() {
         return dispatchGesture(g, null, null)
     }
 
-    private fun tapAt(x: Float, y: Float): Boolean {
+    fun tapAt(x: Float, y: Float): Boolean {
         val p = Path().apply { moveTo(x, y) }
         val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build()
         return dispatchGesture(g, null, null)
@@ -165,5 +165,79 @@ class RedshotAccess : AccessibilityService() {
         val args = Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         return field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /** Several fingers at once / timed strokes (games, pinch, joystick + look). Coordinates in percent. stroke: x1,y1,x2,y2,start_ms,dur_ms */
+    fun gesture(strokes: List<DoubleArray>): Boolean {
+        val dm = resources.displayMetrics
+        val b = GestureDescription.Builder()
+        for (s in strokes.take(10)) {
+            val p = Path().apply {
+                moveTo((dm.widthPixels * s[0] / 100.0).toFloat(), (dm.heightPixels * s[1] / 100.0).toFloat())
+                if (s[0] != s[2] || s[1] != s[3]) lineTo((dm.widthPixels * s[2] / 100.0).toFloat(), (dm.heightPixels * s[3] / 100.0).toFloat())
+            }
+            b.addStroke(GestureDescription.StrokeDescription(p, s[4].toLong().coerceAtLeast(0), s[5].toLong().coerceIn(1, 60_000)))
+        }
+        return dispatchGesture(b.build(), null, null)
+    }
+
+    /** Does the screen currently contain this text (visible text or description)? */
+    fun screenHas(text: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        return root.findAccessibilityNodeInfosByText(text).any { it.isVisibleToUser }
+    }
+
+    /** Where on screen (percent) is this text? Returns "x%,y%" lines for up to 6 matches. */
+    fun findOnScreen(text: String): String {
+        val root = rootInActiveWindow ?: return "error: screen nahi padh paya"
+        val dm = resources.displayMetrics
+        val out = root.findAccessibilityNodeInfosByText(text).filter { it.isVisibleToUser }.take(6).map {
+            val r = android.graphics.Rect(); it.getBoundsInScreen(r)
+            "(${(r.centerX() * 100 / dm.widthPixels)}%, ${(r.centerY() * 100 / dm.heightPixels)}%) " + (it.text ?: it.contentDescription ?: "") + (if (it.isClickable) " [btn]" else "")
+        }
+        return if (out.isEmpty()) "error: '$text' screen par nahi dikha" else out.joinToString("\n")
+    }
+
+    /** First switch/toggle on screen: set it to `on` (does nothing if it is already so). */
+    fun setFirstSwitch(on: Boolean): Boolean {
+        val root = rootInActiveWindow ?: return false
+        fun find(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+            val cn = n.className?.toString() ?: ""
+            if (n.isCheckable && (cn.contains("Switch") || cn.contains("Toggle") || cn.contains("CheckBox"))) return n
+            for (i in 0 until n.childCount) { val c = n.getChild(i) ?: continue; find(c)?.let { return it } }
+            return null
+        }
+        val sw = find(root) ?: return false
+        if (sw.isChecked == on) return true
+        var x: AccessibilityNodeInfo? = sw
+        while (x != null && !x.isClickable) x = x.parent
+        return (x ?: sw).performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    /** Screenshot as a small JPEG so the model can see it (Android 11+). */
+    fun shot(): ByteArray? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var out: ByteArray? = null
+        takeScreenshot(android.view.Display.DEFAULT_DISPLAY, java.util.concurrent.Executors.newSingleThreadExecutor(), object : TakeScreenshotCallback {
+            override fun onSuccess(r: ScreenshotResult) {
+                try {
+                    val hb = r.hardwareBuffer
+                    val bmp = android.graphics.Bitmap.wrapHardwareBuffer(hb, r.colorSpace)?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                    hb.close()
+                    if (bmp != null) {
+                        val w = 720; val h = bmp.height * w / bmp.width
+                        val sc = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
+                        val bo = java.io.ByteArrayOutputStream()
+                        sc.compress(android.graphics.Bitmap.CompressFormat.JPEG, 60, bo)
+                        out = bo.toByteArray()
+                    }
+                } catch (e: Exception) {}
+                latch.countDown()
+            }
+            override fun onFailure(code: Int) { latch.countDown() }
+        })
+        latch.await(4, java.util.concurrent.TimeUnit.SECONDS)
+        return out
     }
 }

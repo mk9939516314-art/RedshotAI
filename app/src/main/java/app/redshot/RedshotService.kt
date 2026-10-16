@@ -53,6 +53,7 @@ class RedshotService : Service() {
         }
         val enrolling: Boolean get() = (instance?.ear?.enrollWanted ?: 0) > 0
 
+        private val SERVER_TOOLS = setOf("web_fetch", "calculate", "utility", "currency_rate", "weather", "geocode", "ip_lookup", "stock_quote", "image_generate", "url_safety", "translate_text", "deep_think")
         private const val STALE_MS = 20_000L
         private const val IDLE_MS = 45_000L          // live conversation stays open this long without talk
         private const val WINDOW_MS = 120_000L       // after it closes, the next sentence still needs no "Redshot"
@@ -137,6 +138,7 @@ class RedshotService : Service() {
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "redshot:ear").also { it.setReferenceCounted(false); it.acquire() }
         } catch (e: Exception) {}
         RedshotNotifs.onNew = { n2 -> onNotification(n2) }
+        Deep.sendImage = { jpg -> val ss = session; if (ss != null && !ss.isClosed) { ss.sendImage(jpg); true } else false }
 
         speaker = Speaker(this) { busy -> ear?.setPaused(busy) }
         speaker?.prefetch(acks.map { it to "hi-IN" } + listOf(
@@ -187,7 +189,10 @@ class RedshotService : Service() {
     private val acks = listOf("हाँ भाई, बोल।", "हाँ, बता।", "जी, बोलो।", "हाँ भाई, सुन रहा हूँ।")
     private val filler = "हम्म, एक सेकंड..."
 
-    private fun musicOn(): Boolean = try { (getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive } catch (e: Exception) { false }
+    /** Something else (reels, music, video) is playing on the phone; Redshot's own voice does not count. */
+    private fun musicOn(): Boolean = try {
+        !modelSpeaking && System.currentTimeMillis() - lastSpeakEnd > 1800 && (getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive
+    } catch (e: Exception) { false }
 
     /** One voice for everything: the live voice says it; the older stock voice is only the fallback when live is unreachable. */
     private fun sayOut(text: String, lang: String) {
@@ -409,10 +414,12 @@ class RedshotService : Service() {
         }
     }
 
-    private fun closeLive(reason: String) {
+    private fun closeLive(reason: String, onlyIfIdle: Boolean = false) {
         var s: LiveSession? = null
         var was = false
         synchronized(liveLock) {
+            // a close decided a moment ago must not kill a conversation that just got going again
+            if (onlyIfIdle && System.currentTimeMillis() - lastLiveActivity < IDLE_MS - 2000) return
             s = session
             session = null
             was = liveActive
@@ -454,7 +461,7 @@ class RedshotService : Service() {
                 return
             }
             applyEarMode()
-            if (!modelSpeaking && now - lastLiveActivity > IDLE_MS) io.execute { closeLive("chup raha") }
+            if (!modelSpeaking && now - lastLiveActivity > IDLE_MS) io.execute { closeLive("chup raha", true) }
             else if (now - liveStartedAt > HARD_CAP_MS) io.execute { closeLive("time limit") }
         } catch (e: Exception) {}
     }
@@ -473,46 +480,52 @@ class RedshotService : Service() {
         lastLiveActivity = System.currentTimeMillis()
     }
 
-    // ----- audio route: loud speaker (not the ear-piece), call-style echo cancellation -----
+    // ----- audio: plain media output through the loud speaker (no call mode: nothing else on the phone gets disturbed) -----
 
-    private var savedVoiceVol = -1
+    private var savedMusicVol = -1
+    private var focusReq: android.media.AudioFocusRequest? = null
+    @Volatile private var lastSpeakEnd = 0L
 
     private fun enterCallAudio() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            savedAudioMode = am.mode
-            @Suppress("DEPRECATION")
-            savedSpeaker = am.isSpeakerphoneOn
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            val outs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            val headset = outs.firstOrNull {
-                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (cur < (max * 0.6).toInt()) {
+                if (savedMusicVol < 0) savedMusicVol = cur
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, (max * 0.7).toInt(), 0)
             }
-            if (Build.VERSION.SDK_INT >= 31) {
-                val cands = am.availableCommunicationDevices
-                val target = (if (headset != null) cands.firstOrNull { it.id == headset.id } else null)
-                    ?: cands.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                if (target != null) am.setCommunicationDevice(target)
-            } else if (headset == null) {
-                @Suppress("DEPRECATION")
-                am.isSpeakerphoneOn = true
-            }
-            savedVoiceVol = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
-            val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
-            if (savedVoiceVol < (max * 0.8).toInt()) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (max * 0.85).toInt(), 0)
+            log("audio", "mode=${am.mode} music=$cur/$max call=${am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)} speakerOn=${am.isSpeakerphoneOn} btsco=${am.isBluetoothScoOn}")
         } catch (e: Exception) { log("error", "audio route: " + e.message) }
     }
 
     private fun leaveCallAudio() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            if (Build.VERSION.SDK_INT >= 31) am.clearCommunicationDevice()
-            @Suppress("DEPRECATION")
-            am.isSpeakerphoneOn = savedSpeaker
-            am.mode = savedAudioMode
-            if (savedVoiceVol >= 0) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, savedVoiceVol, 0)
+            if (savedMusicVol >= 0) { am.setStreamVolume(AudioManager.STREAM_MUSIC, savedMusicVol, 0); savedMusicVol = -1 }
+            abandonFocus()
+        } catch (e: Exception) {}
+    }
+
+    /** While Redshot talks, reels/music duck instead of fighting with it. */
+    private fun takeFocus() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (focusReq == null) {
+                val r = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                    .setOnAudioFocusChangeListener { }.build()
+                focusReq = r
+                am.requestAudioFocus(r)
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun abandonFocus() {
+        try {
+            val r = focusReq ?: return
+            focusReq = null
+            (getSystemService(Context.AUDIO_SERVICE) as AudioManager).abandonAudioFocusRequest(r)
         } catch (e: Exception) {}
     }
 
@@ -533,8 +546,8 @@ class RedshotService : Service() {
             modelSpeaking = speaking
             lastLiveActivity = System.currentTimeMillis()
             ear?.modelTalking = speaking
-            if (speaking) live = "live: bol raha hoon"
-            else { ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
+            if (speaking) { takeFocus(); live = "live: bol raha hoon" }
+            else { lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 
         override fun onTurnComplete() {
@@ -594,6 +607,10 @@ class RedshotService : Service() {
                 "remember" -> {
                     val r = Brain.post(this@RedshotService, "device/remember", JSONObject().put("fact", args.optString("fact")), 8000)
                     if (r != null) "ok" else "error: yaad nahi rakh paya (${Brain.lastError})"
+                }
+                in SERVER_TOOLS -> {
+                    val r = Brain.post(this@RedshotService, "device/tool", JSONObject().put("name", name).put("args", args), 40000)
+                    r?.optString("result", "")?.ifBlank { null } ?: "error: $name nahi chal paya (${Brain.lastError})"
                 }
                 "mute_listening" -> {
                     muted = true
