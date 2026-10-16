@@ -75,6 +75,12 @@ class LiveSession(private val host: Host) {
         })
     }
 
+    /** Text from the phone itself (e.g. "tell the owner: class starts in 10 minutes"): the model says it out loud in its own voice. */
+    fun sendText(t: String) {
+        val msg = JSONObject().put("realtimeInput", JSONObject().put("text", t)).toString()
+        if (ready) ws?.send(msg) else pending.add(msg)
+    }
+
     /** Owner talked over the model: cut its voice right now. */
     fun cutPlayback() { player.flush() }
 

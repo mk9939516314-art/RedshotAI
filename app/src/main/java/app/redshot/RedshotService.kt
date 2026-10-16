@@ -6,9 +6,9 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -16,10 +16,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Background body of Redshot: no screen.
- * Own ears -> instant on-phone commands -> brain (audio + text) for everything else -> premium voice.
+ * Ears -> instant on-phone commands -> ONE live voice brain (same voice for everything) -> proactive mind.
+ * Threads are separated on purpose: a slow network call can never block the ears, the mic gate or the watchdog.
  */
 class RedshotService : Service() {
 
@@ -51,18 +53,20 @@ class RedshotService : Service() {
         }
         val enrolling: Boolean get() = (instance?.ear?.enrollWanted ?: 0) > 0
 
-        private const val CONVERSATION_MS = 90_000L
         private const val STALE_MS = 20_000L
+        private const val IDLE_MS = 45_000L          // live conversation stays open this long without talk
+        private const val WINDOW_MS = 120_000L       // after it closes, the next sentence still needs no "Redshot"
+        private const val HARD_CAP_MS = 14 * 60_000L // Gemini live sessions end at 15 min
     }
 
-    private val io = Executors.newFixedThreadPool(2)
-    private val fast = Executors.newSingleThreadExecutor()
-    private val keepAlive = Executors.newSingleThreadScheduledExecutor()
+    private val io = Executors.newFixedThreadPool(4)
+    private val fast = Executors.newSingleThreadExecutor()          // local router lane
+    private val wd = Executors.newSingleThreadScheduledExecutor()   // watchdog only: never blocks
+    private val bg = Executors.newScheduledThreadPool(2)            // pings, logs, proactive mind
     private var ear: Ear? = null
     private var speaker: Speaker? = null
     private var announcedPending = false
 
-    @Volatile private var lastReplyAt = 0L
     @Volatile private var windowUntil = 0L
     @Volatile private var lastText = ""
     @Volatile private var lastTextAt = 0L
@@ -73,7 +77,9 @@ class RedshotService : Service() {
     private var liveSetup: JSONObject? = null
     @Volatile private var liveCfgAt = 0L
     @Volatile private var liveCfgFailAt = 0L
+    private val cfgLock = Any()
     @Volatile private var session: LiveSession? = null
+    @Volatile private var gen = 0
     @Volatile private var liveActive = false
     @Volatile private var openedAt = 0L
     @Volatile private var liveStartedAt = 0L
@@ -99,7 +105,7 @@ class RedshotService : Service() {
     @Volatile private var lastMindSend = 0L
     @Volatile private var lastMindSay = 0L
     @Volatile private var mindScheduled = false
-    private val mindKeys = Regex("(baje|बजे|\\bkal\\b|कल|subah|सुबह|shaam|शाम|raat|class|क्लास|exam|एग्जाम|test|टेस्ट|train|ट्रेन|tatkal|तत्काल|book|बुक|alarm|अलार्म|yaad|याद|remind|meeting|मीटिंग|deadline|submit|interview|ticket|टिकट|payment|bill|fees|फीस|tomorrow|tonight|\\d\\s*(am|pm))", RegexOption.IGNORE_CASE)
+    private val mindKeys = Regex("(baje|बजे|\\bkal\\b|कल|subah|सुबह|shaam|शाम|raat|class|क्लास|exam|एग्जाम|test|टेस्ट|train|ट्रेन|tatkal|तत्काल|book|बुक|alarm|अलार्म|yaad|याद|remind|meeting|मीटिंग|deadline|submit|interview|ticket|टिकट|payment|bill|fees|फीस|tomorrow|tonight|jaa raha|ja raha|जा रहा|\\d\\s*(am|pm))", RegexOption.IGNORE_CASE)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -114,11 +120,8 @@ class RedshotService : Service() {
             .setOngoing(true)
             .build()
         try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            } else {
-                startForeground(1, n)
-            }
+            if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(1, n)
         } catch (e: Exception) {
             state = "service start fail: " + e.javaClass.simpleName
             stopSelf()
@@ -127,34 +130,40 @@ class RedshotService : Service() {
         instance = this
         AutoScroll.appCtx = applicationContext
         Voiceprint.load(this)
+        AwayMode.load(this)
+        RedshotNotifs.appCtx = applicationContext
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "redshot:ear").also { it.setReferenceCounted(false); it.acquire() }
         } catch (e: Exception) {}
-        RedshotNotifs.onNew = { n -> onNotification(n) }
-        keepAlive.scheduleWithFixedDelay(Runnable { flushLog() }, 6, 6, java.util.concurrent.TimeUnit.SECONDS)
-        keepAlive.scheduleWithFixedDelay(Runnable { mindTick() }, 3, 15, java.util.concurrent.TimeUnit.MINUTES)
+        RedshotNotifs.onNew = { n2 -> onNotification(n2) }
+
         speaker = Speaker(this) { busy -> ear?.setPaused(busy) }
         speaker?.prefetch(acks.map { it to "hi-IN" } + listOf(
             filler to "hi-IN",
             "इंटरनेट नहीं है भाई, अभी बस फोन वाले कमांड चलेंगे।" to "hi-IN",
-            "दिमाग तक बात देर से पहुँच रही है, एक बार फिर बोल।" to "hi-IN",
-            "हाँ भाई, बोल।" to "hi-IN"
+            "दिमाग तक बात देर से पहुँच रही है, एक बार फिर बोल।" to "hi-IN"
         ))
-        // keep the brain warm so the first reply is as fast as the rest
-        keepAlive.scheduleWithFixedDelay(Runnable { liveWatchdog() }, 1, 1, java.util.concurrent.TimeUnit.SECONDS)
-        keepAlive.scheduleWithFixedDelay({
-            try { if (!muted) Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000) } catch (e: Exception) {}
-        }, 5, 240, java.util.concurrent.TimeUnit.SECONDS)
+
+        // watchdog: own thread, never does network work
+        wd.scheduleWithFixedDelay(Runnable { watchdog() }, 1, 1, TimeUnit.SECONDS)
+        // everything that touches the network lives on its own pool
+        bg.scheduleWithFixedDelay(Runnable { flushLog() }, 6, 6, TimeUnit.SECONDS)
+        bg.scheduleWithFixedDelay(Runnable { mindTick() }, 3, 15, TimeUnit.MINUTES)
+        bg.scheduleWithFixedDelay(Runnable {
+            try { if (!muted) { Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000); loadLiveConfig() } } catch (e: Exception) {}
+        }, 5, 240, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (ear == null || ear?.running == false) {
-            ear?.stop()
-            ear = Ear(this, { text, pcm, wake, dist -> onHeard(text, pcm, wake, dist) }, { s -> state = s },
-                { prewarm() }, { onUserVoice() }, { onBarge() }).also { it.start() }
-        }
+        if (ear == null || ear?.running == false) startEar()
         return START_STICKY
+    }
+
+    private fun startEar() {
+        ear?.stop()
+        ear = Ear(this, { text, pcm, wk, dist -> onHeard(text, pcm, wk, dist) }, { s -> state = s },
+            { prewarm() }, { onUserVoice() }, { onBarge() }).also { it.start() }
     }
 
     override fun onDestroy() {
@@ -168,7 +177,8 @@ class RedshotService : Service() {
         speaker?.shutdown()
         io.shutdownNow()
         fast.shutdownNow()
-        keepAlive.shutdownNow()
+        wd.shutdownNow()
+        bg.shutdownNow()
         super.onDestroy()
     }
 
@@ -179,21 +189,28 @@ class RedshotService : Service() {
 
     private fun musicOn(): Boolean = try { (getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive } catch (e: Exception) { false }
 
-    private fun onHeard(text: String, pcm: ShortArray, wake: Int, dist: Double) {
+    /** One voice for everything: the live voice says it; the older stock voice is only the fallback when live is unreachable. */
+    private fun sayOut(text: String, lang: String) {
+        if (text.isBlank()) return
+        if (muted) return
+        if (speakViaLive(text)) { voice = "live"; return }
+        speaker?.say(text, lang); voice = speaker?.engine ?: "-"
+    }
+
+    private fun onHeard(text: String, pcm: ShortArray, wk: Int, dist: Double) {
         val now = System.currentTimeMillis()
         if (text.isNotEmpty() && text == lastText && now - lastTextAt < 3000) return
         lastText = text
         lastTextAt = now
         val strict = musicOn()
         val mine = !Voiceprint.enrolled || dist == -2.0 || Voiceprint.accept(dist, strict)
-        heard = (if (wake > 0) "[Redshot suna] " else "") + (if (text.isEmpty()) "(kuch samajh nahi aaya)" else text) +
+        heard = (if (wk > 0) "[Redshot suna] " else "") + (if (text.isEmpty()) "(kuch samajh nahi aaya)" else text) +
             (if (dist >= 0) "  (meri awaaz? %.2f)".format(dist) else "")
 
-        // A live conversation is already open and the mic is in sentence mode (something is playing on the phone):
+        // A live conversation is open and the mic is in sentence mode (something is playing on the phone):
         // only the owner's sentences are passed on.
         if (liveActive && !earInLive) {
-            val accept = if (Voiceprint.enrolled) (dist >= 0 && Voiceprint.accept(dist, true)) || (dist == -2.0 && wake > 0)
-                         else wake > 0
+            val accept = if (Voiceprint.enrolled) (dist >= 0 && Voiceprint.accept(dist, true)) || (dist == -2.0 && wk > 0) else wk > 0
             if (accept && !modelSpeaking) {
                 session?.sendBurst(pcm)
                 onUserVoice()
@@ -208,50 +225,52 @@ class RedshotService : Service() {
             mindAddSpeech(text)
         }
 
-        // Phone commands never wait behind a slow brain call: they have their own lane.
         fast.execute {
-            val say = { s: String, lang: String -> speaker?.say(s, lang); voice = speaker?.engine ?: "-" }
+            val say = { s: String, lang: String -> sayOut(s, lang) }
             val setMuted = { m: Boolean -> muted = m }
 
-            // while muted, only the wake-up phrase counts (no "Redshot" needed)
             if (muted) {
-                if (text.isNotBlank()) Router.handle(this, text, true, say, setMuted)
+                if (text.isNotBlank()) Router.handle(this, text, true, { s, l -> speaker?.say(s, l) }, setMuted)
                 route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "wapas sun raha hoon"
                 return@execute
             }
 
-            // Only act when "Redshot" was said, or we are in the middle of a conversation.
-            val cleaned = Wake.detect(text, wake)
+            val words0 = text.split(" ").filter { it.isNotBlank() }.size
+            // a long sentence where no wake spotter fired is almost always TV / other people, not "Redshot ..."
+            var cleaned = Wake.detect(text, wk)
+            if (cleaned != null && wk == 0 && words0 > 6) cleaned = null
             val inWindow = now < windowUntil
             if (cleaned == null && !inWindow) { route = "Redshot naam nahi suna, ignore kiya"; return@execute }
 
-            // Only the owner's voice may command (reels, TV, other people are ignored)
             if (!mine) { route = "awaaz teri nahi lagi (%.2f), ignore".format(dist); return@execute }
 
             val cmd = (cleaned ?: text).trim()
             val seconds = pcm.size / 16000.0
             val words = cmd.split(" ").filter { it.isNotBlank() }.size
+            val level = if (cleaned != null) (if (wk >= 2) 2 else 1) else 2
 
-            // short phone commands run locally and instantly; long/open sentences go to the live brain
+            // short phone commands run locally and instantly; open/long sentences go to the live brain
             val handled = try { cmd.isNotEmpty() && words <= 7 && Router.handle(this, cmd, false, say, setMuted) } catch (e: Exception) { false }
 
-            // just the name, nothing else (or only a junk word next to it)
-            if (!handled && (cmd.isEmpty() || (cleaned != null && seconds < 1.3 && words <= 1))) {
-                windowUntil = now + 10_000
-                route = "Redshot suna, jawab diya"
-                say(acks[(now % acks.size).toInt()], "hi-IN")
+            if (handled) {
+                windowUntil = System.currentTimeMillis() + 20_000
+                route = "phone ne turant kiya"
+                ActionLog.add("local command: " + cmd.take(80))
                 return@execute
             }
 
-            if (handled) {
-                windowUntil = System.currentTimeMillis() + 8_000
-                lastReplyAt = System.currentTimeMillis()
-                route = if (muted) "chup mode (jagane ke liye bol: jaag ja)" else "phone ne turant kiya"
-            } else {
-                val level = if (cleaned != null) (if (wake >= 2) 2 else 1) else 2
-                io.execute {
-                    if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
-                    if (!startLive(cmd, pcm, level)) askBrain(cmd, pcm, level)
+            // just the name: the live voice answers ("haan bol bhai") so there is only ONE voice
+            val nameOnly = cmd.isEmpty() || (cleaned != null && seconds < 1.3 && words <= 1)
+            io.execute {
+                if (System.currentTimeMillis() - now > STALE_MS) { route = "purani baat chhod di"; return@execute }
+                if (startLive(cmd, pcm, level)) {
+                    route = if (nameOnly) "Redshot suna, live ne jawab diya" else "live ko bheja"
+                } else if (nameOnly) {
+                    windowUntil = System.currentTimeMillis() + 15_000
+                    route = "Redshot suna (live nahi mila), purani awaaz"
+                    speaker?.say(acks[(now % acks.size).toInt()], "hi-IN")
+                } else {
+                    askBrain(cmd, pcm, level)
                 }
             }
         }
@@ -271,42 +290,52 @@ class RedshotService : Service() {
             val arr = JSONArray()
             var n = 0
             while (n < 50) { val o = logQ.poll() ?: break; arr.put(o); n++ }
-            val r = Brain.post(this, "device/log", JSONObject().put("items", arr), 10000)
-            if (r == null) { /* offline: drop, never block */ }
+            Brain.post(this, "device/log", JSONObject().put("items", arr), 10000)
         } catch (e: Exception) {}
     }
 
     // ---------- live conversation ----------
 
     private fun loadLiveConfig(): Boolean {
-        val now = System.currentTimeMillis()
-        if (liveKey != null && liveSetup != null && now - liveCfgAt < 10 * 60_000L) return true
-        if (now - liveCfgFailAt < 20_000L) return liveKey != null && liveSetup != null
-        val r = Brain.post(this, "device/live_config", JSONObject(), 8000)
-        val k = r?.optString("key", "") ?: ""
-        val st = r?.optJSONObject("setup")
-        if (k.isBlank() || st == null) {
-            liveCfgFailAt = now
-            live = "config nahi mila: " + Brain.lastError
-            log("error", "live_config: " + Brain.lastError)
-            return liveKey != null && liveSetup != null
+        synchronized(cfgLock) {
+            val now = System.currentTimeMillis()
+            if (liveKey != null && liveSetup != null && now - liveCfgAt < 10 * 60_000L) return true
+            if (now - liveCfgFailAt < 15_000L) return liveKey != null && liveSetup != null
+            val r = Brain.post(this, "device/live_config", JSONObject(), 8000)
+            val k = r?.optString("key", "") ?: ""
+            val st = r?.optJSONObject("setup")
+            if (k.isBlank() || st == null) {
+                liveCfgFailAt = now
+                live = "config nahi mila: " + Brain.lastError
+                log("error", "live_config: " + Brain.lastError)
+                return liveKey != null && liveSetup != null
+            }
+            liveKey = k; liveSetup = st; liveCfgAt = now
+            return true
         }
-        liveKey = k; liveSetup = st; liveCfgAt = now
-        return true
+    }
+
+    /** Facts that change every minute are added fresh at every session start (time, what was just done, away mode, last talk). */
+    private fun freshContext(): String {
+        val sb = StringBuilder()
+        sb.append("\n\nABHI KA SAMAY: ").append(java.text.SimpleDateFormat("EEEE d MMMM yyyy, h:mm a", java.util.Locale.ENGLISH).format(java.util.Date())).append(" IST")
+        if (AwayMode.active) sb.append("\nAWAY MODE CHALU: ").append(AwayMode.describe())
+        sb.append("\nPHONE/REDSHOT NE ABHI TAK YE KIYA (sab dimaag milake, ye tera hi kiya hua hai, mana mat kar):\n").append(ActionLog.recent(12))
+        if (convoLog.isNotEmpty() && System.currentTimeMillis() - lastLiveEndAt < 3 * 60_000L)
+            sb.append("\nABHI KI PICHHLI BAAT-CHEET (isi ka silsila):\n").append(convoLog.toString().takeLast(900))
+        return sb.toString()
     }
 
     private fun newSession(): LiveSession? {
         val k = liveKey ?: return null
         var st = liveSetup ?: return null
-        // short memory across sessions: what was just talked about (within 3 minutes)
-        if (convoLog.isNotEmpty() && System.currentTimeMillis() - lastLiveEndAt < 3 * 60_000L) {
-            try {
-                st = JSONObject(st.toString())
-                val part = st.getJSONObject("setup").getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0)
-                part.put("text", part.getString("text") + "\n\nABHI KI PICHHLI BAAT-CHEET (isi ka silsila):\n" + convoLog.toString().takeLast(900))
-            } catch (e: Exception) {}
-        }
-        val s = LiveSession(liveHost)
+        try {
+            st = JSONObject(st.toString())
+            val part = st.getJSONObject("setup").getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0)
+            part.put("text", part.getString("text") + freshContext())
+        } catch (e: Exception) {}
+        val g = ++gen
+        val s = LiveSession(H(g))
         session = s
         openedAt = System.currentTimeMillis()
         live = "connect ho raha hai"
@@ -318,34 +347,51 @@ class RedshotService : Service() {
     private fun prewarm() {
         if (muted || liveActive || session != null) return
         io.execute {
+            if (!loadLiveConfig()) return@execute
             synchronized(liveLock) {
                 if (muted || liveActive || session != null) return@execute
-                if (!loadLiveConfig()) return@execute
                 newSession()
             }
         }
     }
 
+    private fun beginActive(s: LiveSession) {
+        liveActive = true
+        liveStartedAt = System.currentTimeMillis()
+        lastLiveActivity = liveStartedAt
+        silentTurns = 0
+        userVoiceSinceTurn = true
+        liveHeard = ""; liveSaid = ""
+        enterCallAudio()
+        applyEarMode()
+    }
+
     /** Returns true when the live session took over (it answers by voice). */
     private fun startLive(cmd: String, pcm: ShortArray, wakeLevel: Int): Boolean {
+        if (!loadLiveConfig()) return false
         synchronized(liveLock) {
-            if (!loadLiveConfig()) return false
             var s = session
             if (s == null || s.isClosed) { session = null; s = newSession() }
             if (s == null) return false
             if (liveActive) { s.sendBurst(pcm); onUserVoice(); return true }
-            liveActive = true
-            liveStartedAt = System.currentTimeMillis()
-            lastLiveActivity = liveStartedAt
-            silentTurns = 0
-            userVoiceSinceTurn = true
-            fallback = Triple(cmd, pcm, wakeLevel)
-            liveHeard = ""; liveSaid = ""
-            route = "live: Redshot ne turant suna"
-            enterCallAudio()
+            fallback = if (cmd.isNotBlank()) Triple(cmd, pcm, wakeLevel) else null
+            beginActive(s)
             s.sendBurst(pcm)
-            applyEarMode()
             log("wake", "heard: $cmd")
+            return true
+        }
+    }
+
+    /** The phone itself wants to say something (reminder, local answer): same live voice, mic open for a reply. */
+    private fun speakViaLive(text: String): Boolean {
+        if (!loadLiveConfig()) return false
+        synchronized(liveLock) {
+            var s = session
+            if (s == null || s.isClosed) { session = null; s = newSession() }
+            if (s == null) return false
+            if (!liveActive) { fallback = null; beginActive(s) }
+            s.sendText("[Phone se, owner ne kuch bola nahi] Owner ko ab apni awaaz mein, dost ki tarah chhota sa ye bata (naye shabdon mein, ek-do vaakya): $text")
+            lastLiveActivity = System.currentTimeMillis()
             return true
         }
     }
@@ -377,39 +423,39 @@ class RedshotService : Service() {
             if (was) leaveCallAudio()
         }
         ear?.stopLive()
-        if (was) lastLiveEndAt = System.currentTimeMillis()
+        if (was) { lastLiveEndAt = System.currentTimeMillis(); windowUntil = System.currentTimeMillis() + WINDOW_MS }
         try { s?.close() } catch (e: Exception) {}
-        live = "band: $reason"
+        live = if (was) "so gaya ($reason)" else "band"
         if (was) log("live_end", reason)
     }
 
-    private fun liveWatchdog() {
+    /** Runs on its own thread every second and never blocks. */
+    private fun watchdog() {
         try {
-            // the ears must never stay dead: restart them if the thread ended
+            // the ears must never stay dead
             if (ear?.running == false) {
                 log("error", "ear restart: " + earError + " state=" + state)
-                ear?.stop()
-                ear = Ear(this, { text, pcm, wake, dist -> onHeard(text, pcm, wake, dist) }, { s -> state = s },
-                    { prewarm() }, { onUserVoice() }, { onBarge() }).also { it.start() }
+                startEar()
             }
             val now = System.currentTimeMillis()
             val s = session
             if (!liveActive) {
-                // a pre-opened connection nobody used
-                if (s != null && now - openedAt > 8_000) closeLive("prewarm khatam")
+                if (s != null && now - openedAt > 8_000) io.execute { closeLive("prewarm khatam") }
                 return
             }
-            // connection that never became ready: hand the sentence to the normal brain right away
             if (s != null && !s.ready && now - liveStartedAt > 5_000) {
+                // never became ready: fall back to the normal brain right away
                 val fb = fallback
                 fallback = null
-                closeLive("live connect nahi hua")
-                if (fb != null) io.execute { askBrain(fb.first, fb.second, fb.third) }
+                io.execute {
+                    closeLive("live connect nahi hua")
+                    if (fb != null) askBrain(fb.first, fb.second, fb.third)
+                }
                 return
             }
             applyEarMode()
-            if (!modelSpeaking && now - lastLiveActivity > 12_000) closeLive("chup rehne se band")
-            else if (now - liveStartedAt > 8 * 60_000L) closeLive("8 min poore")
+            if (!modelSpeaking && now - lastLiveActivity > IDLE_MS) io.execute { closeLive("chup raha") }
+            else if (now - liveStartedAt > HARD_CAP_MS) io.execute { closeLive("time limit") }
         } catch (e: Exception) {}
     }
 
@@ -422,7 +468,7 @@ class RedshotService : Service() {
     private fun onBarge() {
         session?.cutPlayback()
         modelSpeaking = false
-        ear?.liveGate = false
+        ear?.modelTalking = false
         userVoiceSinceTurn = true
         lastLiveActivity = System.currentTimeMillis()
     }
@@ -453,7 +499,6 @@ class RedshotService : Service() {
                 @Suppress("DEPRECATION")
                 am.isSpeakerphoneOn = true
             }
-            // call-volume is a separate (often low) slider: lift it so the voice is clearly audible
             savedVoiceVol = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
             val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
             if (savedVoiceVol < (max * 0.8).toInt()) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (max * 0.85).toInt(), 0)
@@ -471,27 +516,29 @@ class RedshotService : Service() {
         } catch (e: Exception) {}
     }
 
-    private val liveHost = object : LiveSession.Host {
-        override fun onReady() { live = if (liveActive) "live: sun raha hoon" else "live: taiyaar" }
+    /** Callbacks of ONE live session; an old session can never disturb a newer one. */
+    private inner class H(val g: Int) : LiveSession.Host {
+        private fun cur() = g == gen
+
+        override fun onReady() { if (cur()) live = if (liveActive) "live: sun raha hoon" else "live: taiyaar" }
 
         override fun onModelAudio() {
+            if (!cur()) return
             fallback = null
             lastLiveActivity = System.currentTimeMillis()
         }
 
         override fun onModelSpeaking(speaking: Boolean) {
+            if (!cur()) return
             modelSpeaking = speaking
             lastLiveActivity = System.currentTimeMillis()
-            if (speaking) {
-                live = "live: bol raha hoon"
-                ear?.liveGate = true
-            } else {
-                // keep the mic closed a moment longer so the tail of its own voice is never heard
-                keepAlive.schedule(Runnable { if (!modelSpeaking) ear?.liveGate = false }, 400, java.util.concurrent.TimeUnit.MILLISECONDS)
-            }
+            ear?.modelTalking = speaking
+            if (speaking) live = "live: bol raha hoon"
+            else { ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 
         override fun onTurnComplete() {
+            if (!cur()) return
             lastLiveActivity = System.currentTimeMillis()
             if (turnUser.isNotEmpty() || turnModel.isNotEmpty()) {
                 log("live_user", turnUser.toString().trim())
@@ -501,13 +548,13 @@ class RedshotService : Service() {
                 turnUser = StringBuilder(); turnModel = StringBuilder()
             }
             if (!liveActive) return
-            // loop breaker: model keeps answering but the owner never spoke (echo / noise)
             if (userVoiceSinceTurn) silentTurns = 0 else silentTurns++
             userVoiceSinceTurn = false
             if (silentTurns >= 3) io.execute { closeLive("khud se baat ho rahi thi") }
         }
 
         override fun onUserText(t: String) {
+            if (!cur()) return
             turnUser.append(t)
             liveHeard += t; if (liveHeard.length > 160) liveHeard = liveHeard.takeLast(160)
             heard = "[live] " + liveHeard
@@ -516,22 +563,20 @@ class RedshotService : Service() {
         }
 
         override fun onModelText(t: String) {
+            if (!cur()) return
             turnModel.append(t)
             liveSaid += t; if (liveSaid.length > 160) liveSaid = liveSaid.takeLast(160)
         }
 
         override fun onClosed(reason: String, wasReady: Boolean) {
-            val fb = fallback
-            val wasActive = liveActive
-            fallback = null
+            val mine = cur()
+            val fb = if (mine) fallback else null
+            if (mine) fallback = null
             io.execute {
-                if (session?.isClosed == true) session = null
-                if (wasActive) {
-                    closeLive(reason)
-                    // dropped unexpectedly in the middle of talking: the next sentence needs no "Redshot"
-                    windowUntil = System.currentTimeMillis() + 20_000
-                } else live = "band: $reason"
-                log("live_closed", "$reason ready=$wasReady")
+                log("live_closed", "$reason ready=$wasReady current=$mine")
+                if (!mine) return@execute
+                if (liveActive) closeLive(reason)        // dropped mid-talk: next sentence needs no "Redshot" (window set in closeLive)
+                else { if (session?.isClosed == true) session = null; live = "band" }
                 if (!wasReady && fb != null) {
                     route = "live nahi laga ($reason), brain se"
                     askBrain(fb.first, fb.second, fb.third)
@@ -580,19 +625,19 @@ class RedshotService : Service() {
 
     private fun onNotification(n: RedshotNotifs.N) {
         synchronized(mindEvents) {
-            mindEvents.add(JSONObject().put("kind", "notif").put("pkg", n.pkg).put("text", (n.title + ": " + n.text).take(300)))
+            val o = JSONObject().put("kind", "notif").put("pkg", n.pkg).put("text", (n.title + ": " + n.text).take(300))
+            if (n.canReply) o.put("key", n.key)
+            mindEvents.add(o)
             while (mindEvents.size > 30) mindEvents.removeAt(0)
         }
-        scheduleMind(20_000)
+        // when the owner is away, chat messages are answered quickly
+        scheduleMind(if (AwayMode.active && n.canReply) 2_500 else 20_000)
     }
 
     private fun scheduleMind(delayMs: Long) {
         if (mindScheduled || muted) return
         mindScheduled = true
-        keepAlive.schedule(Runnable {
-            mindScheduled = false
-            io.execute { runMind() }
-        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        bg.schedule(Runnable { mindScheduled = false; runMind() }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun mindTick() {
@@ -612,7 +657,7 @@ class RedshotService : Service() {
     private fun runMind() {
         try {
             val now = System.currentTimeMillis()
-            if (now - lastMindSend < 15_000L) return
+            if (now - lastMindSend < 8_000L) { scheduleMind(9_000); return }
             val batch = JSONArray()
             synchronized(mindEvents) {
                 if (mindEvents.isEmpty()) return
@@ -622,21 +667,29 @@ class RedshotService : Service() {
             }
             lastMindSend = now
             val body = JSONObject().put("events", batch).put("pkg", RedshotAccess.currentPackage)
+                .put("did", ActionLog.recent(8))
+            if (AwayMode.active) body.put("away", AwayMode.describe())
             synchronized(told) { body.put("told", JSONArray(told.takeLast(8))) }
             val r = Brain.post(this, "device/mind", body, 20000) ?: run { mindLast = "mind fail: " + Brain.lastError; return }
             val say = r.optString("say", "")
             val note = r.optString("notify", "")
             val acts = r.optJSONArray("actions")
             if (say.isBlank() && note.isBlank() && (acts == null || acts.length() == 0)) { mindLast = "kuch karne layak nahi"; return }
-            if (acts != null) for (i in 0 until acts.length()) { val a = acts.optJSONObject(i) ?: continue; Executor.run(this, a) }
+            if (acts != null) for (i in 0 until acts.length()) {
+                val a = acts.optJSONObject(i) ?: continue
+                val res = Executor.run(this, a)
+                ActionLog.add("(khud se) " + a.toString().take(150) + " -> " + (res ?: "ok"))
+            }
             val msg = if (say.isNotBlank()) say else note
             if (msg.isNotBlank()) {
                 synchronized(told) { if (told.contains(msg)) return; told.add(msg); while (told.size > 20) told.removeAt(0) }
-                val canTalk = say.isNotBlank() && !liveActive && !muted && System.currentTimeMillis() - lastMindSay > 120_000L
-                if (canTalk) { lastMindSay = System.currentTimeMillis(); speaker?.say(say, "hi-IN") } else Executor.notify(this, msg)
+                ActionLog.add("(khud se) owner ko bataya: " + msg.take(120))
+                val canTalk = say.isNotBlank() && !muted && System.currentTimeMillis() - lastMindSay > 90_000L
+                if (canTalk) { lastMindSay = System.currentTimeMillis(); if (!speakViaLive(say)) speaker?.say(say, "hi-IN") }
+                else Executor.notify(this, msg)
             }
             mindLast = "kiya: " + (if (msg.isNotBlank()) msg else "action").take(80)
-            log("mind", "say=$say notify=$note acts=" + (acts?.toString() ?: "[]").take(200))
+            log("mind", "say=$say notify=$note acts=" + (acts?.toString() ?: "[]").take(300))
         } catch (e: Exception) { mindLast = "mind error: " + e.message }
     }
 
@@ -652,7 +705,7 @@ class RedshotService : Service() {
         if (text.isNotBlank()) body.put("text", text)
 
         // if the brain takes a moment, say something short so it never feels dead
-        val waiting = keepAlive.schedule(Runnable {
+        val waiting = bg.schedule(Runnable {
             speaker?.say(filler, "hi-IN")
         }, 1700, java.util.concurrent.TimeUnit.MILLISECONDS)
 
@@ -707,8 +760,7 @@ class RedshotService : Service() {
                 if (note != null && failure == null) failure = note
             }
         }
-        lastReplyAt = System.currentTimeMillis()
-        windowUntil = lastReplyAt + (if (say.isNotBlank()) 25_000L else 8_000L)
+        windowUntil = System.currentTimeMillis() + (if (say.isNotBlank()) 25_000L else 8_000L)
         route = route + " (jawab mila)"
 
         if (failure != null) {

@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -173,6 +174,22 @@ class MainActivity : Activity() {
         }
         addStep("Notification access (sab apps ke notification)", { notifOn() }) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+        addStep("Poora access (SMS, call log, location, files)", {
+            listOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALL_LOG,
+                Manifest.permission.WRITE_CALENDAR, Manifest.permission.ACCESS_FINE_LOCATION)
+                .all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED } &&
+                (Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager())
+        }) {
+            val need = listOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS, Manifest.permission.READ_CALL_LOG,
+                Manifest.permission.WRITE_CALENDAR, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (need.isNotEmpty()) {
+                requestPermissions(need.toTypedArray(), 2)
+                headline.text = "SMS/call log 'allow' na dikhe to: Settings > Apps > Redshot > 3 dot > 'Allow restricted settings', phir dobara dabao."
+            } else if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+            }
         }
         addStep("Meri awaaz sikhao (sirf teri awaaz pe kaam)", { Voiceprint.enrolled }) {
             if (!RedshotService.spkReady) {

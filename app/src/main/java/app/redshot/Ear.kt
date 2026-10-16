@@ -55,10 +55,21 @@ class Ear(
     }
 
     fun startLive(sink: (ShortArray) -> Unit) { liveSink = sink }
-    fun stopLive() { liveSink = null; liveGate = false }
+    fun stopLive() { liveSink = null; modelTalking = false; gateTailUntil = 0L }
 
     /** true while the model is talking: the mic is muted for the model unless the owner clearly talks over it. */
-    @Volatile var liveGate = false
+    @Volatile var modelTalking = false
+    @Volatile var gateTailUntil = 0L
+    @Volatile private var gateClosedSince = 0L
+    private val liveGate: Boolean get() {
+        val now = System.currentTimeMillis()
+        val closed = modelTalking || now < gateTailUntil
+        if (!closed) { gateClosedSince = 0L; return false }
+        if (gateClosedSince == 0L) gateClosedSince = now
+        // safety: the mic can never stay shut for more than 30 s, whatever happens elsewhere
+        if (now - gateClosedSince > 30_000L) { modelTalking = false; gateTailUntil = 0L; gateClosedSince = 0L; return false }
+        return true
+    }
     @Volatile private var bargeUntil = 0L
     /** how many enrollment sentences are still wanted (0 = not enrolling) */
     @Volatile var enrollWanted = 0

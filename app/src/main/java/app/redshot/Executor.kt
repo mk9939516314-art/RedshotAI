@@ -122,6 +122,8 @@ object Executor {
                 }
                 "whatsapp_call" -> whatsappCall(ctx, a.optString("contact"), a.optBoolean("video"))
                 "whatsapp_message" -> whatsappMessage(ctx, a.optString("contact"), a.optString("text"))
+                "whatsapp_open_chat" -> whatsappOpenChat(ctx, a.optString("contact"))
+                "reply" -> { val r = RedshotNotifs.sendReply(a.optString("key"), a.optString("text")); if (r.startsWith("ok")) null else r }
                 "notify" -> { notify(ctx, a.optString("text")); null }
                 "auto_scroll" -> {
                     if (a.optBoolean("stop")) AutoScroll.stop() else AutoScroll.start(a.optInt("every_seconds", 20).coerceIn(3, 600))
@@ -150,13 +152,27 @@ object Executor {
                 "notifications_read" -> RedshotNotifs.summary(a.optInt("count", 12).coerceIn(1, 40))
                 "calendar" -> calendar(ctx, a.optInt("hours", 48).coerceIn(1, 24 * 14))
                 else -> {
-                    val note = run(ctx, a)
-                    if (note == null) "ok" else "error: $note"
+                    val viaAccess = Access.run(ctx, a.optString("type"), a)
+                    if (viaAccess != null) {
+                        if (!viaAccess.startsWith("error")) logAction(a, viaAccess)
+                        viaAccess
+                    } else {
+                        val note = run(ctx, a)
+                        if (note == null) { logAction(a, "ok"); "ok" } else "error: $note"
+                    }
                 }
             }
         } catch (e: Exception) {
             "error: " + (e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    private val logged = setOf("alarm", "timer", "call", "call_contact", "whatsapp_call", "whatsapp_message", "whatsapp_open_chat", "sms_send", "email_send",
+        "calendar_add", "set_away", "reply_notification", "open_app", "play", "notify", "auto_scroll", "navigate")
+
+    private fun logAction(a: JSONObject, res: String) {
+        val t = a.optString("type")
+        if (t in logged) ActionLog.add(t + " " + a.toString().take(160) + " -> " + res.take(60))
     }
 
     fun calendar(ctx: Context, hours: Int): String {
@@ -235,6 +251,25 @@ object Executor {
             .setPackage(pkg)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startBg(ctx, i)
+        return null
+    }
+
+    /** Opens the conversation itself (not the profile picture): uses WhatsApp's own "message" contact row. */
+    private fun whatsappOpenChat(ctx: Context, name: String): String? {
+        if (ctx.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED)
+            return "contacts ki permission nahi di"
+        val pkg = waPackage(ctx) ?: return "phone mein WhatsApp installed nahi hai"
+        val mime = "vnd.android.cursor.item/vnd.com.whatsapp.profile"
+        val id = waDataRow(ctx, name, mime)
+        if (id != null) {
+            startBg(ctx, Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("content://com.android.contacts/data/$id"), mime).setPackage(pkg)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            return null
+        }
+        // not found as a WhatsApp contact: try by phone number
+        val num = resolveContact(ctx, name)?.filter { it.isDigit() } ?: return "'$name' naam ka contact nahi mila"
+        val full = if (num.length == 10) "91$num" else num
+        startBg(ctx, Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$full")).setPackage(pkg))
         return null
     }
 

@@ -151,7 +151,8 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
             track.write(data, 0, data.size - data.size % 2)
             track.stop()
             val frames = data.size / 2
-            val deadline = System.currentTimeMillis() + 25_000
+            // never wait longer than the clip itself can last (a stuck audio route used to keep the ears shut for 25 s)
+            val deadline = System.currentTimeMillis() + frames / 24 + 1200
             while (track.playbackHeadPosition < frames && System.currentTimeMillis() < deadline) Thread.sleep(15)
             f.setLastModified(System.currentTimeMillis())
             return true
@@ -205,7 +206,7 @@ class Speaker(private val ctx: Context, private val onBusy: (Boolean) -> Unit) {
                 try { cacheFile(text, lang).writeBytes(tee.toByteArray()); trimCache() } catch (e: Exception) {}
             }
             track.stop()
-            val deadline = System.currentTimeMillis() + 25_000
+            val deadline = System.currentTimeMillis() + written / 24 + 1500
             while (track.playbackHeadPosition < written && System.currentTimeMillis() < deadline) Thread.sleep(15)
             return written > 0
         } catch (e: Exception) {
