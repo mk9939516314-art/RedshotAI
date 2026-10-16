@@ -71,7 +71,12 @@ jobs:
           ls -la app/src/main/assets/model-spk
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --stacktrace 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          grep -E "^e: |error:" build.log | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          exit $rc
 
       - name: Name the APK
         run: cp app/build/outputs/apk/debug/app-debug.apk redshot.apk
