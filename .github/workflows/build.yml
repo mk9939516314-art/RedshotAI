@@ -73,7 +73,7 @@ jobs:
       - name: Build debug APK
         run: |
           set +e
-          gradle assembleDebug --stacktrace 2>&1 | tee build.log
+          gradle assembleDebug -PbuildNum=${{ github.run_number }} --stacktrace 2>&1 | tee build.log
           rc=${PIPESTATUS[0]}
           grep -E "^e: |error:" build.log | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
           exit $rc
@@ -91,5 +91,6 @@ jobs:
         with:
           tag_name: v0.2.${{ github.run_number }}
           name: Redshot build ${{ github.run_number }}
+          body: ${{ github.event.head_commit.message }}
           files: redshot.apk
           make_latest: true

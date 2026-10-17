@@ -56,6 +56,11 @@ class MainActivity : Activity() {
     private lateinit var details: TextView
     private lateinit var brainBtn: Button
     private var showDetails = false
+    private lateinit var updCard: LinearLayout
+    private lateinit var updTitle: TextView
+    private lateinit var updMsg: TextView
+    private lateinit var updBar: ProgressBar
+    private lateinit var updBtn: Button
 
     private val enrollLines = listOf(
         "Aaj mausam bahut achha hai, main apne ghar se baahar ghoomne jaa raha hoon.",
@@ -122,6 +127,17 @@ class MainActivity : Activity() {
         root.addView(head)
         headline = tv("", 14f, MUTED).apply { setPadding(0, dp(6), 0, 0) }
         root.addView(headline)
+
+        // ----- app update -----
+        updCard = card(root)
+        updTitle = tv("APP UPDATE", 11f, MUTED, true)
+        updCard.addView(updTitle)
+        updMsg = tv("", 14f, TEXT).apply { setPadding(0, dp(6), 0, dp(8)) }
+        updCard.addView(updMsg)
+        updBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; visibility = View.GONE }
+        updCard.addView(updBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(8)))
+        updBtn = pillButton("Update karo") { startUpdate() }.apply { visibility = View.GONE }
+        updCard.addView(updBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply { topMargin = dp(10) })
 
         // ----- live card -----
         val live = card(root)
@@ -240,6 +256,39 @@ class MainActivity : Activity() {
             try { startForegroundService(Intent(this, RedshotService::class.java)) } catch (e: Exception) {}
         }
         main.post(refresher)
+        if (Updater.status != "downloading" && Updater.status != "installing") Thread { Updater.check(applicationContext) }.start()
+    }
+
+    private fun startUpdate() {
+        if (Updater.status == "downloading" || Updater.status == "installing") return
+        Thread {
+            val ctx = applicationContext
+            if (Updater.status != "ready") { if (Updater.check(ctx, true) == null && Updater.status != "ready") return@Thread; if (Updater.download(ctx) == null) return@Thread }
+            Updater.install(ctx)
+        }.start()
+    }
+
+    private fun refreshUpdate() {
+        val st = Updater.status
+        val i = Updater.info
+        val mb = { b: Long -> "%.1f".format(b / 1048576.0) }
+        when (st) {
+            "downloading" -> {
+                val d = Updater.done.get(); val t = maxOf(1L, Updater.total)
+                val sp = Updater.speedBps; val eta = if (sp > 0) ((t - d) / sp) else 0
+                updMsg.text = "Download: ${mb(d)} / ${mb(t)} MB  •  ${"%.1f".format(sp / 1048576.0)} MB/s" + (if (sp > 0) "  •  ${eta}s baaki" else "")
+                updBar.visibility = View.VISIBLE; updBar.progress = (d * 1000 / t).toInt(); updBtn.visibility = View.GONE
+            }
+            "installing" -> { updMsg.text = Updater.message; updBar.visibility = View.VISIBLE; updBar.isIndeterminate = true; updBtn.visibility = View.GONE }
+            "available", "ready" -> {
+                updMsg.text = "Naya version ${i?.tag ?: ""} taiyaar" + (if (st == "ready") " (download ho chuka)" else " (${mb(i?.size ?: 0)} MB)") + (if (!i?.notes.isNullOrBlank()) "\n${i?.notes}" else "")
+                updBar.visibility = View.GONE; updBar.isIndeterminate = false
+                updBtn.visibility = View.VISIBLE; updBtn.text = if (st == "ready") "Abhi install karo" else "Update karo"
+            }
+            "error" -> { updMsg.text = Updater.message; updBar.visibility = View.GONE; updBtn.visibility = if (i != null) View.VISIBLE else View.GONE; updBtn.text = "Dobara try karo" }
+            "checking" -> { updMsg.text = "Naya version dhundh raha hoon..."; updBar.visibility = View.GONE; updBtn.visibility = View.GONE }
+            else -> { updMsg.text = Updater.message.ifBlank { "Version ${Updater.currentName(this)}" }; updBar.visibility = View.GONE; updBtn.visibility = View.GONE }
+        }
     }
 
     override fun onPause() {
@@ -253,6 +302,7 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
+        refreshUpdate()
         var done = 0
         for (s in steps) {
             val ok = s.ok()

@@ -152,6 +152,7 @@ class RedshotService : Service() {
         // everything that touches the network lives on its own pool
         bg.scheduleWithFixedDelay(Runnable { flushLog() }, 6, 6, TimeUnit.SECONDS)
         bg.scheduleWithFixedDelay(Runnable { mindTick() }, 3, 15, TimeUnit.MINUTES)
+        bg.scheduleWithFixedDelay(Runnable { try { Updater.backgroundTick(applicationContext) } catch (e: Exception) {} }, 2, 30, TimeUnit.MINUTES)
         bg.scheduleWithFixedDelay(Runnable {
             try { if (!muted) { Brain.post(this, "device/ping", JSONObject().put("k", 1), 10000); loadLiveConfig() } } catch (e: Exception) {}
         }, 5, 240, TimeUnit.SECONDS)

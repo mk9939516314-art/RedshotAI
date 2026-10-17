@@ -11,8 +11,8 @@ android {
         applicationId = "app.redshot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 15
-        versionName = "0.9.0"
+        versionCode = (project.findProperty("buildNum") as String?)?.toIntOrNull() ?: 15
+        versionName = "0.9." + ((project.findProperty("buildNum") as String?) ?: "0")
         // Only 64-bit phones (all modern ones); keeps the app small.
         ndk { abiFilters += listOf("arm64-v8a") }
     }
