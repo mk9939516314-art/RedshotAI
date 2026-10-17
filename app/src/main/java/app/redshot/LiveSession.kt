@@ -200,20 +200,31 @@ class LiveSession(private val host: Host) {
 /** Plays the model's 24 kHz speech as it streams in; can be cut instantly when the user interrupts. */
 class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
     private val q = LinkedBlockingQueue<ByteArray>()
+    private val lock = Any()
     @Volatile private var track: AudioTrack? = null
     @Volatile private var running = true
     @Volatile private var speaking = false
-    @Volatile private var written = 0L
+    @Volatile private var flushGen = 0
+    private var written = 0L
+    private var bufferMs = 450          // adaptive: grows after a choppy answer, shrinks slowly when clean
     private val thread = Thread { loop() }.also { it.name = "redshot-player"; it.start() }
+
+    private companion object {
+        const val BYTES_PER_MS = 48          // 24 kHz, 16-bit mono
+        const val LEAD_IN_MS = 300           // silence first: wakes the speaker amplifier so the first syllables are not eaten
+        const val END_GAP_MS = 400L          // this long without audio (and everything played) = answer finished
+    }
 
     fun enqueue(b: ByteArray) { q.add(b) }
 
+    /** Owner talked over the model (or the server interrupted it): silence right now. */
     fun flush() {
+        flushGen++
         q.clear()
-        val t = track
-        track = null
-        written = 0
-        try { t?.pause(); t?.flush(); t?.release() } catch (e: Exception) {}
+        synchronized(lock) {
+            val t = track; track = null; written = 0
+            try { t?.pause(); t?.flush(); t?.release() } catch (e: Exception) {}
+        }
         if (speaking) { speaking = false; onSpeaking(false) }
     }
 
@@ -221,33 +232,21 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
         running = false
         q.clear()
         thread.interrupt()
-        val t = track
-        track = null
-        try { t?.stop(); t?.release() } catch (e: Exception) {}
+        synchronized(lock) {
+            val t = track; track = null
+            try { t?.stop(); t?.release() } catch (e: Exception) {}
+        }
         if (speaking) { speaking = false; onSpeaking(false) }
     }
 
-    private fun ensureTrack(): AudioTrack {
-        track?.let { return it }
+    private fun createTrack(): AudioTrack {
         val rate = 24000
         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(rate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-            )
-            .setBufferSizeInBytes(maxOf(min, rate * 4))
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(maxOf(min, rate * 2 * 6))
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
         try { t.setVolume(1.0f) } catch (e: Exception) {}
         try {
@@ -260,61 +259,84 @@ class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
                 ?: outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             if (pick != null) t.preferredDevice = pick
         } catch (e: Exception) {}
-        t.play()
-        track = t
-        written = 0
         return t
     }
 
+    private fun write(t: AudioTrack, b: ByteArray) {
+        var off = 0
+        val n = b.size - b.size % 2
+        while (off < n && running) {
+            val w = t.write(b, off, n - off)
+            if (w <= 0) break
+            off += w
+        }
+        written += off / 2
+    }
+
+    /** One answer = one track: lead-in silence + a cushion of audio, then a steady stream. Mid-answer gaps just continue (no re-buffering stalls). */
     private fun loop() {
         val pre = ArrayList<ByteArray>()
         var preBytes = 0
         var firstAt = 0L
+        var lastChunkAt = 0L
+        var playing = false
+        var gen = flushGen
+        var underrunsAtStart = 0
         while (running) {
             try {
-                val b = q.poll(150, TimeUnit.MILLISECONDS)
-                if (b == null) {
-                    // short reply that never reached the prebuffer size: play what we have
-                    if (pre.isNotEmpty() && System.currentTimeMillis() - firstAt > 220) {
-                        playChunks(pre); pre.clear(); preBytes = 0
+                if (gen != flushGen) { gen = flushGen; pre.clear(); preBytes = 0; playing = false }
+                val b = q.poll(30, TimeUnit.MILLISECONDS)
+                val now = System.currentTimeMillis()
+                if (b != null) {
+                    lastChunkAt = now
+                    if (!speaking) { speaking = true; onSpeaking(true) }
+                    if (!playing) {
+                        if (pre.isEmpty()) {
+                            firstAt = now
+                            // open the output right away and feed it silence while the cushion fills
+                            synchronized(lock) {
+                                val t = createTrack(); track = t; written = 0
+                                t.play()
+                                write(t, ByteArray(LEAD_IN_MS * BYTES_PER_MS))
+                                underrunsAtStart = if (android.os.Build.VERSION.SDK_INT >= 24) t.underrunCount else 0
+                            }
+                        }
+                        pre.add(b); preBytes += b.size
+                    } else {
+                        synchronized(lock) { track?.let { write(it, b) } }
                     }
-                    val t = track
-                    if (speaking && t != null && pre.isEmpty() && t.playbackHeadPosition >= written) {
-                        speaking = false
-                        // stop the track so the phone does not think music is playing (keeps the mic logic honest)
-                        try { t.pause() } catch (e: Exception) {}
-                        onSpeaking(false)
-                    }
-                    continue
                 }
-                if (!speaking) { speaking = true; onSpeaking(true) }
-                val t0 = track
-                if (t0 == null || t0.playbackHeadPosition >= written) {
-                    // (re)starting after silence: build a small cushion first so network jitter never makes it stutter
-                    if (pre.isEmpty()) firstAt = System.currentTimeMillis()
-                    pre.add(b); preBytes += b.size
-                    if (preBytes >= 14400 || System.currentTimeMillis() - firstAt > 220) {
-                        playChunks(pre); pre.clear(); preBytes = 0
+                if (!playing && pre.isNotEmpty()) {
+                    val target = bufferMs * BYTES_PER_MS
+                    val idle = now - lastChunkAt
+                    // start: cushion full, or the whole (short) answer already arrived, or we waited long enough
+                    if (preBytes >= target || (idle > 120 && b == null) || now - firstAt > bufferMs + 300L) {
+                        synchronized(lock) { track?.let { t -> for (c in pre) write(t, c) } }
+                        pre.clear(); preBytes = 0; playing = true
                     }
-                } else {
-                    if (pre.isNotEmpty()) { playChunks(pre); pre.clear(); preBytes = 0 }
-                    playChunks(listOf(b))
+                }
+                if (playing && b == null && now - lastChunkAt > END_GAP_MS) {
+                    val t = track
+                    if (t == null || t.playbackHeadPosition.toLong() >= written) {
+                        // finished: learn from stutters, free the speaker
+                        synchronized(lock) {
+                            val tt = track
+                            if (tt != null && android.os.Build.VERSION.SDK_INT >= 24) {
+                                val choppy = tt.underrunCount - underrunsAtStart
+                                bufferMs = if (choppy > 2) (bufferMs + 250).coerceAtMost(1500) else (bufferMs - 40).coerceAtLeast(350)
+                            }
+                            track = null; written = 0
+                            try { tt?.stop(); tt?.release() } catch (e: Exception) {}
+                        }
+                        playing = false
+                        if (speaking) { speaking = false; onSpeaking(false) }
+                    }
                 }
             } catch (e: InterruptedException) {
                 return
             } catch (e: Exception) {
-                // track was released by flush(); next chunk makes a new one
-                pre.clear(); preBytes = 0
+                pre.clear(); preBytes = 0; playing = false
             }
-        }
-    }
-
-    private fun playChunks(list: List<ByteArray>) {
-        val t = ensureTrack()
-        if (t.playState != AudioTrack.PLAYSTATE_PLAYING) t.play()
-        for (b in list) {
-            t.write(b, 0, b.size - b.size % 2)
-            written += b.size / 2
         }
     }
 }
