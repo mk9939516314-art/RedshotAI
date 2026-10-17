@@ -474,6 +474,7 @@ class RedshotService : Service() {
 
     /** Owner clearly talked over Redshot: stop its voice immediately. */
     private fun onBarge() {
+        log("audio", "barge: owner ne beech me kaata")
         session?.cutPlayback()
         modelSpeaking = false
         ear?.modelTalking = false

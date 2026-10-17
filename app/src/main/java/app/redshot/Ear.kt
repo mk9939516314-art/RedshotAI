@@ -66,12 +66,15 @@ class Ear(
         val now = System.currentTimeMillis()
         val closed = modelTalking || now < gateTailUntil
         if (!closed) { gateClosedSince = 0L; return false }
-        if (gateClosedSince == 0L) gateClosedSince = now
+        if (gateClosedSince == 0L) { gateClosedSince = now; echoRef = 0.0; bargeRun = 0 }
         // safety: the mic can never stay shut for more than 30 s, whatever happens elsewhere
         if (now - gateClosedSince > 30_000L) { modelTalking = false; gateTailUntil = 0L; gateClosedSince = 0L; return false }
         return true
     }
     @Volatile private var bargeUntil = 0L
+    /** loudest the model's own voice (through the speaker, into the mic) was at the start of this answer */
+    @Volatile private var echoRef = 0.0
+    @Volatile private var bargeRun = 0
     /** how many enrollment sentences are still wanted (0 = not enrolling) */
     @Volatile var enrollWanted = 0
         set(v) { field = v; enrollFails = 0; enrollLastAt = System.currentTimeMillis() }
@@ -148,7 +151,6 @@ class Ear(
         var lquiet = 0
         var lchecked = false
         var lmute = false
-        var bargeRun = 0
         var hintTick = 0
         var hintAt = 0L
         var wasLive = false
@@ -288,12 +290,21 @@ class Ear(
                     if (liveGate && System.currentTimeMillis() > bargeUntil) {
                         // model is talking: mic stays closed unless the owner clearly talks over it
                         out = zero
-                        bargeRun = if (r > 1500.0) bargeRun + 1 else 0
-                        if (bargeRun >= 8) {
-                            bargeUntil = System.currentTimeMillis() + 4000
+                        val sinceClosed = System.currentTimeMillis() - gateClosedSince
+                        if (sinceClosed < 900) {
+                            // the first moments of an answer: only echo of its own voice, measure it, never barge
+                            echoRef = maxOf(echoRef, r)
                             bargeRun = 0
-                            onBarge()
-                            out = buf
+                        } else {
+                            // owner must be MUCH louder than the speaker's echo, for a good quarter second
+                            val thr = maxOf(echoRef * 2.5, 3200.0)
+                            bargeRun = if (r > thr) bargeRun + 1 else 0
+                            if (bargeRun >= 12) {
+                                bargeUntil = System.currentTimeMillis() + 4000
+                                bargeRun = 0
+                                onBarge()
+                                out = buf
+                            }
                         }
                     } else if (lmute) {
                         out = zero

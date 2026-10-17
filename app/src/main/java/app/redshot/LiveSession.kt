@@ -89,7 +89,8 @@ class LiveSession(private val host: Host) {
     }
 
     /** Owner talked over the model: cut its voice right now. */
-    fun cutPlayback() { player.flush() }
+    fun cutPlayback() { dropUntil = System.currentTimeMillis() + 1500; player.flush() }
+    @Volatile private var dropUntil = 0L
 
     fun close() {
         try { ws?.close(1000, "bye") } catch (e: Exception) {}
@@ -159,11 +160,12 @@ class LiveSession(private val host: Host) {
                 for (i in 0 until parts.length()) {
                     val data = parts.optJSONObject(i)?.optJSONObject("inlineData")?.optString("data") ?: continue
                     if (data.isEmpty()) continue
+                    if (System.currentTimeMillis() < dropUntil) continue   // tail of an answer the owner already cut off
                     player.enqueue(Base64.decode(data, Base64.DEFAULT))
                     host.onModelAudio()
                 }
             }
-            if (sc.optBoolean("interrupted")) player.flush()
+            if (sc.optBoolean("interrupted")) { dropUntil = 0L; player.flush() }
             sc.optJSONObject("inputTranscription")?.optString("text")?.let { if (it.isNotEmpty()) host.onUserText(it) }
             sc.optJSONObject("outputTranscription")?.optString("text")?.let { if (it.isNotEmpty()) host.onModelText(it) }
             if (sc.optBoolean("turnComplete")) host.onTurnComplete()
