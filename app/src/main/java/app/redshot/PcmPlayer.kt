@@ -106,6 +106,7 @@ class PcmPlayer(
             try {
                 if (myGen != gen) { myGen = gen; reset() }
                 val c = q.poll(20, TimeUnit.MILLISECONDS)
+                if (myGen != gen) { myGen = gen; reset() }   // a flush may have happened while we were waiting for this chunk
                 val now = System.currentTimeMillis()
                 if (c != null && c.gen == myGen) {
                     lastChunkAt = now

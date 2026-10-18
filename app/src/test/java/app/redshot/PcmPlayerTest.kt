@@ -110,6 +110,18 @@ class PcmPlayerTest {
         assertEquals(0L, r.sinks[1].cutAt)
     }
 
+    /** the first chunk right after a flush must never be lost (player thread is waiting in poll when flush happens) */
+    @Test fun chunkRightAfterFlushIsNotLost() {
+        repeat(20) {
+            val r = Rig()
+            r.player.enqueue(chunk(9600)); Thread.sleep(40)
+            r.player.flush()
+            r.player.enqueue(chunk(9600, 9))
+            assertTrue("answer after flush plays (round $it)", waitFor(3000) { r.sinks.size >= 2 && r.sinks.last().speechBytes >= 9600 })
+            r.player.release()
+        }
+    }
+
     @Test fun flushWhileNothingPlayingIsHarmless() {
         val r = Rig()
         r.player.flush(); r.player.flush()
