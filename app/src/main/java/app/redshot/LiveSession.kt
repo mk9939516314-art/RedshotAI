@@ -216,6 +216,9 @@ class AndroidSink : PcmSink {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         try { track.setVolume(1.0f) } catch (e: Exception) {}
+        // CRUCIAL: by default a streaming track does not start playing until its WHOLE buffer is full. With a big buffer a short
+        // answer (1-2 s) would never be played at all. Start as soon as ~20 ms of audio is there.
+        if (android.os.Build.VERSION.SDK_INT >= 31) try { track.startThresholdInFrames = 480 } catch (e: Exception) {}
     }
     override fun start() { track.play() }
     override fun write(b: ByteArray, off: Int, len: Int): Int = track.write(b, off, len)
