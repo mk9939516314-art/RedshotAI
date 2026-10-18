@@ -30,6 +30,7 @@ class LiveSession(private val host: Host) {
         fun onReady()
         fun onModelAudio()
         fun onModelSpeaking(speaking: Boolean)
+        fun onAudioStats(s: String) {}
         fun onTurnComplete()
         fun onUserText(t: String)
         fun onModelText(t: String)
@@ -57,7 +58,7 @@ class LiveSession(private val host: Host) {
     private val acc = ShortArray(CHUNK)
     private var accPos = 0
     private val tools = Executors.newCachedThreadPool()
-    private val player = PcmPlayer { speaking -> host.onModelSpeaking(speaking) }
+    private val player = PcmPlayer({ AndroidSink() }, { speaking -> host.onModelSpeaking(speaking) }, { host.onAudioStats(it) })
 
     val isClosed: Boolean get() = closed.get()
 
@@ -89,7 +90,8 @@ class LiveSession(private val host: Host) {
     }
 
     /** Owner talked over the model: cut its voice right now. */
-    fun cutPlayback() { dropUntil = System.currentTimeMillis() + 1500; player.flush() }
+    fun cutPlayback() { dropUntil = System.currentTimeMillis() + 10_000; player.flush() }
+    /** after the owner cut in, the rest of that answer is thrown away until the server says it is done */
     @Volatile private var dropUntil = 0L
 
     fun close() {
@@ -166,6 +168,7 @@ class LiveSession(private val host: Host) {
                 }
             }
             if (sc.optBoolean("interrupted")) { dropUntil = 0L; player.flush() }
+            if (sc.optBoolean("turnComplete") || sc.optBoolean("generationComplete")) dropUntil = 0L
             sc.optJSONObject("inputTranscription")?.optString("text")?.let { if (it.isNotEmpty()) host.onUserText(it) }
             sc.optJSONObject("outputTranscription")?.optString("text")?.let { if (it.isNotEmpty()) host.onModelText(it) }
             if (sc.optBoolean("turnComplete")) host.onTurnComplete()
@@ -199,146 +202,25 @@ class LiveSession(private val host: Host) {
     }
 }
 
-/** Plays the model's 24 kHz speech as it streams in; can be cut instantly when the user interrupts. */
-class PcmPlayer(private val onSpeaking: (Boolean) -> Unit) {
-    private val q = LinkedBlockingQueue<ByteArray>()
-    private val lock = Any()
-    @Volatile private var track: AudioTrack? = null
-    @Volatile private var running = true
-    @Volatile private var speaking = false
-    @Volatile private var flushGen = 0
-    private var written = 0L
-    private var bufferMs = 450          // adaptive: grows after a choppy answer, shrinks slowly when clean
-    private val thread = Thread { loop() }.also { it.name = "redshot-player"; it.start() }
-
-    private companion object {
-        const val BYTES_PER_MS = 48          // 24 kHz, 16-bit mono
-        const val LEAD_IN_MS = 300           // silence first: wakes the speaker amplifier so the first syllables are not eaten
-        const val END_GAP_MS = 400L          // this long without audio (and everything played) = answer finished
-    }
-
-    fun enqueue(b: ByteArray) { q.add(b) }
-
-    /** Owner talked over the model (or the server interrupted it): silence right now. */
-    fun flush() {
-        flushGen++
-        q.clear()
-        synchronized(lock) {
-            val t = track; track = null; written = 0
-            try { t?.pause(); t?.flush(); t?.release() } catch (e: Exception) {}
-        }
-        if (speaking) { speaking = false; onSpeaking(false) }
-    }
-
-    fun release() {
-        running = false
-        q.clear()
-        thread.interrupt()
-        synchronized(lock) {
-            val t = track; track = null
-            try { t?.stop(); t?.release() } catch (e: Exception) {}
-        }
-        if (speaking) { speaking = false; onSpeaking(false) }
-    }
-
-    private fun createTrack(): AudioTrack {
-        val rate = 24000
+/** The phone's speaker. Plain media output, default routing (goes where reels / YouTube audio goes). */
+class AndroidSink : PcmSink {
+    private val rate = 24000
+    private val track: AudioTrack
+    init {
         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val t = AudioTrack.Builder()
+        track = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(maxOf(min, rate * 2 * 6))
+            // 40 s: Gemini sends speech much faster than real time, a write must never block for long
+            .setBufferSizeInBytes(maxOf(min, rate * 2 * 40))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
-        try { t.setVolume(1.0f) } catch (e: Exception) {}
-        try {
-            // pin the output: loud speaker (or a connected headset), whatever the phone's call/route state is
-            val c = RedshotService.instance
-            val am = c?.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
-            val outs = am?.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)?.toList() ?: emptyList()
-            val pick = outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET }
-                ?: outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            if (pick != null) t.preferredDevice = pick
-        } catch (e: Exception) {}
-        return t
+        try { track.setVolume(1.0f) } catch (e: Exception) {}
     }
-
-    private fun write(t: AudioTrack, b: ByteArray) {
-        var off = 0
-        val n = b.size - b.size % 2
-        while (off < n && running) {
-            val w = t.write(b, off, n - off)
-            if (w <= 0) break
-            off += w
-        }
-        written += off / 2
-    }
-
-    /** One answer = one track: lead-in silence + a cushion of audio, then a steady stream. Mid-answer gaps just continue (no re-buffering stalls). */
-    private fun loop() {
-        val pre = ArrayList<ByteArray>()
-        var preBytes = 0
-        var firstAt = 0L
-        var lastChunkAt = 0L
-        var playing = false
-        var gen = flushGen
-        var underrunsAtStart = 0
-        while (running) {
-            try {
-                if (gen != flushGen) { gen = flushGen; pre.clear(); preBytes = 0; playing = false }
-                val b = q.poll(30, TimeUnit.MILLISECONDS)
-                val now = System.currentTimeMillis()
-                if (b != null) {
-                    lastChunkAt = now
-                    if (!speaking) { speaking = true; onSpeaking(true) }
-                    if (!playing) {
-                        if (pre.isEmpty()) {
-                            firstAt = now
-                            // open the output right away and feed it silence while the cushion fills
-                            synchronized(lock) {
-                                val t = createTrack(); track = t; written = 0
-                                t.play()
-                                write(t, ByteArray(LEAD_IN_MS * BYTES_PER_MS))
-                                underrunsAtStart = if (android.os.Build.VERSION.SDK_INT >= 24) t.underrunCount else 0
-                            }
-                        }
-                        pre.add(b); preBytes += b.size
-                    } else {
-                        synchronized(lock) { track?.let { write(it, b) } }
-                    }
-                }
-                if (!playing && pre.isNotEmpty()) {
-                    val target = bufferMs * BYTES_PER_MS
-                    val idle = now - lastChunkAt
-                    // start: cushion full, or the whole (short) answer already arrived, or we waited long enough
-                    if (preBytes >= target || (idle > 120 && b == null) || now - firstAt > bufferMs + 300L) {
-                        synchronized(lock) { track?.let { t -> for (c in pre) write(t, c) } }
-                        pre.clear(); preBytes = 0; playing = true
-                    }
-                }
-                if (playing && b == null && now - lastChunkAt > END_GAP_MS) {
-                    val t = track
-                    if (t == null || t.playbackHeadPosition.toLong() >= written) {
-                        // finished: learn from stutters, free the speaker
-                        synchronized(lock) {
-                            val tt = track
-                            if (tt != null && android.os.Build.VERSION.SDK_INT >= 24) {
-                                val choppy = tt.underrunCount - underrunsAtStart
-                                bufferMs = if (choppy > 2) (bufferMs + 250).coerceAtMost(1500) else (bufferMs - 40).coerceAtLeast(350)
-                            }
-                            track = null; written = 0
-                            try { tt?.stop(); tt?.release() } catch (e: Exception) {}
-                        }
-                        playing = false
-                        if (speaking) { speaking = false; onSpeaking(false) }
-                    }
-                }
-            } catch (e: InterruptedException) {
-                return
-            } catch (e: Exception) {
-                pre.clear(); preBytes = 0; playing = false
-            }
-        }
-    }
+    override fun start() { track.play() }
+    override fun write(b: ByteArray, off: Int, len: Int): Int = track.write(b, off, len)
+    override fun headFrames(): Long = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+    override fun underruns(): Int = if (android.os.Build.VERSION.SDK_INT >= 24) track.underrunCount else 0
+    override fun cut() { try { track.pause(); track.flush() } catch (e: Exception) {} }
+    override fun release() { try { track.stop() } catch (e: Exception) {}; try { track.release() } catch (e: Exception) {} }
 }

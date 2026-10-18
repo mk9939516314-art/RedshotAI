@@ -70,6 +70,14 @@ jobs:
           mv tmpmodel3/vosk-model-spk-0.4 app/src/main/assets/model-spk
           ls -la app/src/main/assets/model-spk
 
+      - name: Unit tests (voice player + barge-in logic) - the APK is only built if these pass
+        run: |
+          set +e
+          gradle testDebugUnitTest --stacktrace 2>&1 | tee test.log
+          rc=${PIPESTATUS[0]}
+          grep -E "^e: |FAILED|AssertionError|Exception" test.log | head -30 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          exit $rc
+
       - name: Build debug APK
         run: |
           set +e

@@ -552,6 +552,8 @@ class RedshotService : Service() {
             else { lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 
+        override fun onAudioStats(s: String) { log("audio", s) }
+
         override fun onTurnComplete() {
             if (!cur()) return
             lastLiveActivity = System.currentTimeMillis()

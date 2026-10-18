@@ -66,15 +66,13 @@ class Ear(
         val now = System.currentTimeMillis()
         val closed = modelTalking || now < gateTailUntil
         if (!closed) { gateClosedSince = 0L; return false }
-        if (gateClosedSince == 0L) { gateClosedSince = now; echoRef = 0.0; bargeRun = 0 }
+        if (gateClosedSince == 0L) { gateClosedSince = now; barge.reset() }
         // safety: the mic can never stay shut for more than 30 s, whatever happens elsewhere
         if (now - gateClosedSince > 30_000L) { modelTalking = false; gateTailUntil = 0L; gateClosedSince = 0L; return false }
         return true
     }
     @Volatile private var bargeUntil = 0L
-    /** loudest the model's own voice (through the speaker, into the mic) was at the start of this answer */
-    @Volatile private var echoRef = 0.0
-    @Volatile private var bargeRun = 0
+    private val barge = BargeDetector()
     /** how many enrollment sentences are still wanted (0 = not enrolling) */
     @Volatile var enrollWanted = 0
         set(v) { field = v; enrollFails = 0; enrollLastAt = System.currentTimeMillis() }
@@ -120,7 +118,7 @@ class Ear(
 
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION, SR,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION, SR,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, FRAME * 2 * 8)
         )
@@ -259,7 +257,7 @@ class Ear(
                         wasLive = true
                         resetAll(); frames.clear(); preroll.clear(); text.setLength(0)
                         speaking = false; loudRun = 0; quietRun = 0
-                        lframes = 0; lquiet = 0; lchecked = false; lmute = false; bargeRun = 0
+                        lframes = 0; lquiet = 0; lchecked = false; lmute = false; barge.reset()
                     }
                     val r = rms(buf)
                     RedshotService.level = r.toInt()
@@ -290,21 +288,10 @@ class Ear(
                     if (liveGate && System.currentTimeMillis() > bargeUntil) {
                         // model is talking: mic stays closed unless the owner clearly talks over it
                         out = zero
-                        val sinceClosed = System.currentTimeMillis() - gateClosedSince
-                        if (sinceClosed < 900) {
-                            // the first moments of an answer: only echo of its own voice, measure it, never barge
-                            echoRef = maxOf(echoRef, r)
-                            bargeRun = 0
-                        } else {
-                            // owner must be MUCH louder than the speaker's echo, for a good quarter second
-                            val thr = maxOf(echoRef * 2.5, 3200.0)
-                            bargeRun = if (r > thr) bargeRun + 1 else 0
-                            if (bargeRun >= 12) {
-                                bargeUntil = System.currentTimeMillis() + 4000
-                                bargeRun = 0
-                                onBarge()
-                                out = buf
-                            }
+                        if (barge.onFrame(r, System.currentTimeMillis() - gateClosedSince)) {
+                            bargeUntil = System.currentTimeMillis() + 4000
+                            onBarge()
+                            out = buf
                         }
                     } else if (lmute) {
                         out = zero
