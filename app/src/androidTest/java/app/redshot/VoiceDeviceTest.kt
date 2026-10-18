@@ -40,7 +40,8 @@ class VoiceDeviceTest {
             s.start()
             val pcm = speech(1000)
             assertEquals("whole second accepted", pcm.size, s.write(pcm, 0, pcm.size))
-            assertTrue("speaker head advances (really playing)", waitFor(4000) { s.headFrames() >= 20000 })
+            val ok = waitFor(4000) { s.headFrames() >= 20000 }
+            assertTrue("speaker head advances (really playing) head=${s.headFrames()}/24000", ok)
         } finally { s.release() }
     }
 
@@ -71,7 +72,7 @@ class VoiceDeviceTest {
             var o = 0
             for (f in parts) { val n = ((a.size * f).toInt() / 2) * 2; p.enqueue(a.copyOfRange(o, minOf(a.size, o + n))); o += n; Thread.sleep(25) }
             assertTrue("speaking true", waitFor(2000) { events.contains(true) })
-            assertTrue("answer ends after it was played", waitFor(6000) { events.size >= 2 && !events.last() })
+            assertTrue("answer ends after it was played events=$events stats=$stats", waitFor(6000) { events.size >= 2 && !events.last() })
             assertEquals(listOf(true, false), events.toList())
             assertEquals(1, stats.size)
             assertTrue(stats[0], stats[0].startsWith("voice: 1"))
@@ -93,7 +94,7 @@ class VoiceDeviceTest {
             var reads = 0
             while (System.currentTimeMillis() < end) { val n = rec.read(buf, 0, buf.size); assertTrue("mic read $n", n >= 0); reads++ }
             assertTrue("mic delivered frames", reads > 10)
-            assertTrue("speaker kept playing during recording", s.headFrames() > 24000)
+            assertTrue("speaker kept playing during recording head=${s.headFrames()}", s.headFrames() > 24000)
         } finally { s.release(); rec.stop(); rec.release() }
     }
 
@@ -107,7 +108,7 @@ class VoiceDeviceTest {
             p.flush()
             assertEquals(listOf(true, false), events.toList())
             p.enqueue(speech(800))
-            assertTrue("second answer plays and ends", waitFor(6000) { events.size == 4 })
+            assertTrue("second answer plays and ends events=$events", waitFor(6000) { events.size == 4 })
             assertEquals(listOf(true, false, true, false), events.toList())
         } finally { p.release() }
     }

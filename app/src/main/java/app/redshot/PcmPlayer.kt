@@ -86,8 +86,10 @@ class PcmPlayer(
         var chunks = 0
         var myGen = gen
         var local: PcmSink? = null
+        var lastHead = -1L
+        var headMovedAt = 0L
 
-        fun reset() { pre.clear(); preBytes = 0; started = false; written = 0; speechBytes = 0; chunks = 0; local = null }
+        fun reset() { pre.clear(); preBytes = 0; started = false; written = 0; speechBytes = 0; chunks = 0; local = null; lastHead = -1L; headMovedAt = 0L }
 
         fun put(s: PcmSink, b: ByteArray) {
             var off = 0
@@ -129,7 +131,13 @@ class PcmPlayer(
                     for (p in pre) put(s, p)
                     pre.clear(); preBytes = 0; started = true
                 }
-                if (started && c == null && now - lastChunkAt > END_GAP_MS && s.headFrames() >= written) {
+                if (started) {
+                    val h = s.headFrames()
+                    if (h != lastHead) { lastHead = h; headMovedAt = now }
+                }
+                // finished = nothing new for a while AND (everything played OR the speaker's position stopped moving:
+                // some phones never report the last few frames, which must not keep the mic muted)
+                if (started && c == null && now - lastChunkAt > END_GAP_MS && (s.headFrames() >= written || now - headMovedAt > 700)) {
                     // answer finished and fully played
                     val u = s.underruns()
                     synchronized(lock) { if (sink === s) sink = null }
