@@ -75,7 +75,7 @@ class PcmPlayerTest {
         val r = Rig()
         var total = 0L
         for (i in 0 until 40) {
-            val n = 9600 + (i % 5) * 4800
+            val n = 4800 + (i % 5) * 2400
             total += n
             r.player.enqueue(chunk(n, (i % 100) + 1))
             Thread.sleep(if (i == 20) 500 else 15)
