@@ -9,7 +9,40 @@ permissions:
   contents: write
 
 jobs:
+  device-test:
+    # real Android (emulator): the real speaker path (AudioTrack), mic + speaker together, flush, long story
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Voice tests on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: gradle connectedDebugAndroidTest -PtestAbi=true --stacktrace
+      - name: Show device test failures
+        if: failure()
+        run: |
+          grep -rhE "AssertionError|FAILED|Exception" app/build/outputs/androidTest-results 2>/dev/null | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done || true
+
   build:
+    needs: device-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

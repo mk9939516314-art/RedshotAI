@@ -2,6 +2,8 @@ package app.redshot
 
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.math.abs
+import kotlin.math.sin
 
 class BargeDetectorTest {
     private fun run(d: BargeDetector, levelAt: (Long) -> Double, fromMs: Long, toMs: Long): Long? {
@@ -10,12 +12,21 @@ class BargeDetectorTest {
         return null
     }
 
-    @Test fun loudSpeakerEchoNeverCutsItself() {
-        // echo of its own voice at RMS 1500..6000 with natural wobble: must never count as the owner
-        for (base in listOf(1500.0, 3000.0, 5000.0, 6000.0)) {
+    @Test fun speakerEchoWithSyllablesNeverCutsItself() {
+        // speech envelope: syllables from 10% to 100% of peak, 4 per second, peak 1500..9000
+        for (peak in listOf(1500.0, 3000.0, 6000.0, 9000.0)) {
             val d = BargeDetector()
-            val hit = run(d, { t -> base * (0.8 + 0.4 * Math.abs(Math.sin(t / 90.0))) * 1.0 }, 0, 12_000)
-            assertNull("echo at $base must not barge", hit)
+            val hit = run(d, { t -> peak * (0.1 + 0.9 * abs(sin(t / 110.0))) }, 0, 20_000)
+            assertNull("echo peak $peak must not barge", hit)
+        }
+    }
+
+    @Test fun phoneMicGainSwellingOverTheFirstSecondNeverCutsItself() {
+        // automatic gain control ramps the echo up 6x over 3 seconds
+        for (peak in listOf(800.0, 2000.0, 3000.0)) {
+            val d = BargeDetector()
+            val hit = run(d, { t -> peak * (0.15 + 0.85 * minOf(1.0, t / 3000.0)) * (0.6 + 0.4 * abs(sin(t / 95.0))) }, 0, 15_000)
+            assertNull("swelling echo $peak must not barge", hit)
         }
     }
 
@@ -24,23 +35,15 @@ class BargeDetectorTest {
         assertNull(run(d, { 20000.0 }, 0, BargeDetector.LEARN_MS))
     }
 
-    @Test fun ownerMuchLouderThanEchoCutsIn() {
+    @Test fun earphonesOwnerTalkingOverCutsIn() {
         val d = BargeDetector()
-        // echo ~2000 during the first second, then owner at 9000 from 2 s
-        val hit = run(d, { t -> if (t < 2000) 2000.0 else 9000.0 }, 0, 6000)
+        val hit = run(d, { t -> if (t < 2000) 60.0 else 7000.0 }, 0, 6000)   // no echo with earphones
         assertNotNull(hit)
-        assertTrue("reacts within ~0.3 s of speaking", hit!! in 2000..2400)
+        assertTrue("reacts within ~0.3 s", hit!! in 2000..2400)
     }
 
     @Test fun shortLoudBlipDoesNotBarge() {
         val d = BargeDetector()
-        val hit = run(d, { t -> if (t in 3000..3200) 9000.0 else 1800.0 }, 0, 6000)   // 200 ms click
-        assertNull(hit)
-    }
-
-    @Test fun quietRoomOwnerAboveFloorCutsIn() {
-        val d = BargeDetector()
-        val hit = run(d, { t -> if (t < 1500) 300.0 else 4000.0 }, 0, 4000)
-        assertNotNull(hit)
+        assertNull(run(d, { t -> if (t in 3000..3200) 9000.0 else 100.0 }, 0, 6000))
     }
 }

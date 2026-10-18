@@ -56,23 +56,18 @@ class Ear(
     }
 
     fun startLive(sink: (ShortArray) -> Unit) { liveSink = sink }
-    fun stopLive() { liveSink = null; modelTalking = false; gateTailUntil = 0L }
+    fun stopLive() { liveSink = null; gate.reset() }
 
-    /** true while the model is talking: the mic is muted for the model unless the owner clearly talks over it. */
-    @Volatile var modelTalking = false
-    @Volatile var gateTailUntil = 0L
-    @Volatile private var gateClosedSince = 0L
-    private val liveGate: Boolean get() {
-        val now = System.currentTimeMillis()
-        val closed = modelTalking || now < gateTailUntil
-        if (!closed) { gateClosedSince = 0L; return false }
-        if (gateClosedSince == 0L) { gateClosedSince = now; barge.reset() }
-        // safety: the mic can never stay shut for more than 30 s, whatever happens elsewhere
-        if (now - gateClosedSince > 30_000L) { modelTalking = false; gateTailUntil = 0L; gateClosedSince = 0L; return false }
-        return true
-    }
-    @Volatile private var bargeUntil = 0L
-    private val barge = BargeDetector()
+    /** what the live session hears while Redshot talks (see MicGate) */
+    val gate = MicGate()
+    private val agc = MicAgc()
+    var modelTalking: Boolean
+        get() = gate.modelTalking
+        set(v) { gate.modelTalking = v }
+    var gateTailUntil: Long
+        get() = gate.tailUntil
+        set(v) { gate.tailUntil = v }
+    private val liveGate: Boolean get() = gate.closed
     /** how many enrollment sentences are still wanted (0 = not enrolling) */
     @Volatile var enrollWanted = 0
         set(v) { field = v; enrollFails = 0; enrollLastAt = System.currentTimeMillis() }
@@ -118,7 +113,7 @@ class Ear(
 
         val minBuf = AudioRecord.getMinBufferSize(SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION, SR,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION, SR,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, FRAME * 2 * 8)
         )
@@ -257,7 +252,7 @@ class Ear(
                         wasLive = true
                         resetAll(); frames.clear(); preroll.clear(); text.setLength(0)
                         speaking = false; loudRun = 0; quietRun = 0
-                        lframes = 0; lquiet = 0; lchecked = false; lmute = false; barge.reset()
+                        lframes = 0; lquiet = 0; lchecked = false; lmute = false
                     }
                     val r = rms(buf)
                     RedshotService.level = r.toInt()
@@ -285,17 +280,12 @@ class Ear(
                     }
 
                     var out = buf
-                    if (liveGate && System.currentTimeMillis() > bargeUntil) {
-                        // model is talking: mic stays closed unless the owner clearly talks over it
-                        out = zero
-                        if (barge.onFrame(r, System.currentTimeMillis() - gateClosedSince)) {
-                            bargeUntil = System.currentTimeMillis() + 4000
-                            onBarge()
-                            out = buf
-                        }
-                    } else if (lmute) {
-                        out = zero
+                    when (gate.frame(r)) {
+                        MicGate.Action.ZERO -> out = zero
+                        MicGate.Action.BARGE -> { onBarge(); out = buf }
+                        MicGate.Action.PASS -> if (lmute) out = zero
                     }
+                    if (out !== zero) out = agc.process(out)
                     sink(out)
                     continue
                 }

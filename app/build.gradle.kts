@@ -14,7 +14,9 @@ android {
         versionCode = (project.findProperty("buildNum") as String?)?.toIntOrNull() ?: 15
         versionName = "0.9." + ((project.findProperty("buildNum") as String?) ?: "0")
         // Only 64-bit phones (all modern ones); keeps the app small.
-        ndk { abiFilters += listOf("arm64-v8a") }
+        // (the emulator test job also needs x86_64)
+        ndk { abiFilters += if (project.hasProperty("testAbi")) listOf("arm64-v8a", "x86_64") else listOf("arm64-v8a") }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // One fixed key so every new build installs over the old one (permissions stay).
@@ -53,4 +55,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core-ktx:1.13.1")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
 }

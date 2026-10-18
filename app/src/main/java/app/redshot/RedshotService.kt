@@ -488,6 +488,16 @@ class RedshotService : Service() {
     private var focusReq: android.media.AudioFocusRequest? = null
     @Volatile private var lastSpeakEnd = 0L
 
+    /** earphones / bluetooth connected: no speaker echo, so the owner can talk over Redshot */
+    private fun headsetOn(): Boolean = try {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+            it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+        }
+    } catch (e: Exception) { false }
+
     private fun enterCallAudio() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -548,8 +558,8 @@ class RedshotService : Service() {
             modelSpeaking = speaking
             lastLiveActivity = System.currentTimeMillis()
             ear?.modelTalking = speaking
-            if (speaking) { takeFocus(); live = "live: bol raha hoon" }
-            else { lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
+            if (speaking) { ear?.gate?.bargeEnabled = headsetOn(); takeFocus(); live = "live: bol raha hoon" }
+            else { ear?.gate?.let { log("audio", "mic ne suna: echoPeak=${it.echoPeak.toInt()} headset=${it.bargeEnabled}") }; lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 
         override fun onAudioStats(s: String) { log("audio", s) }
