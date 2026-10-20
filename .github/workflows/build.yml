@@ -61,6 +61,7 @@ jobs:
           gradle testDebugUnitTest --stacktrace 2>&1 | tee test.log
           rc=${PIPESTATUS[0]}
           grep -E "^e: |FAILED|AssertionError|Exception|expected" test.log | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          grep -rhoE "(message|AssertionError)[^>]{0,300}" app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
           exit $rc
 
   tatkal-engine-test:
