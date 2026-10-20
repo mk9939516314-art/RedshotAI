@@ -35,7 +35,7 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none
-          script: gradle connectedDebugAndroidTest -PtestAbi=true --stacktrace 2>&1 | tee dt.log
+          script: bash -c "set -o pipefail; gradle connectedDebugAndroidTest -PtestAbi=true --stacktrace 2>&1 | tee dt.log"
       - name: Show device test failures
         if: failure()
         run: |

@@ -11,12 +11,12 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
+import android.app.Activity
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** One small form where the owner types IRCTC id/password/mobile/passengers himself (a password must never be spoken). */
-class TatkalSetupActivity : ComponentActivity() {
+class TatkalSetupActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         val p = Tatkal.profile(this)

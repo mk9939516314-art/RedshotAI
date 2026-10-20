@@ -33,8 +33,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
+import android.app.Activity
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -44,7 +43,7 @@ import java.net.URL
  * This class is the safety net around it: network drops, blocked pages, dead renderer, UPI app hand-off, screen/CPU kept awake,
  * clock measured against IRCTC's own server, accidental back-press ignored.
  */
-class TatkalActivity : ComponentActivity() {
+class TatkalActivity : Activity() {
     private val HOME = "https://www.irctc.co.in/nget/train-search"
     private lateinit var web: WebView
     private lateinit var status: TextView
@@ -75,9 +74,6 @@ class TatkalActivity : ComponentActivity() {
         } catch (e: Throwable) {}
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(stopRx, IntentFilter("app.redshot.TATKAL_STOP"), Context.RECEIVER_NOT_EXPORTED)
         else registerReceiver(stopRx, IntentFilter("app.redshot.TATKAL_STOP"))
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { Toast.makeText(this@TatkalActivity, "Booking chal rahi hai. Band karne ke liye STOP dabao.", Toast.LENGTH_SHORT).show() }
-        })
 
         val root = FrameLayout(this)
         web = WebView(this)
@@ -134,6 +130,9 @@ class TatkalActivity : ComponentActivity() {
         startJob(intent)
         measureSkewLoop()
     }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onBackPressed() { Toast.makeText(this, "Booking chal rahi hai. Band karne ke liye STOP dabao.", Toast.LENGTH_SHORT).show() }
 
     override fun onNewIntent(i: Intent) {
         super.onNewIntent(i)
