@@ -48,7 +48,7 @@ object Access {
         "list_apps" -> Apps.list(ctx).joinToString(", ") { it.label }.take(3000)
         "app_update" -> Updater.run(ctx, a.optString("action", "install"))
         "wait" -> { Thread.sleep(a.optLong("ms", 800).coerceIn(100, 5000)); "ok" }
-        else -> Pro.run(ctx, name, a) ?: Pro2.run(ctx, name, a) ?: Deep.run(ctx, name, a)
+        else -> Tatkal.run(ctx, name, a) ?: Pro.run(ctx, name, a) ?: Pro2.run(ctx, name, a) ?: Deep.run(ctx, name, a)
     }
 
     // ----- SMS -----

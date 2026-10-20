@@ -280,7 +280,7 @@ class Ear(
                     }
 
                     var out = buf
-                    when (gate.frame(r)) {
+                    when (gate.frame(r, buf)) {
                         MicGate.Action.ZERO -> out = zero
                         MicGate.Action.BARGE -> { onBarge(); out = buf }
                         MicGate.Action.PASS -> if (lmute) out = zero

@@ -54,6 +54,7 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    testImplementation("org.json:json:20231013")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")

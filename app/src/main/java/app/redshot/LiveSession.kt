@@ -61,6 +61,9 @@ class LiveSession(private val host: Host) {
     private val player = PcmPlayer({ AndroidSink() }, { speaking -> host.onModelSpeaking(speaking) }, { host.onAudioStats(it) })
 
     val isClosed: Boolean get() = closed.get()
+    fun echoLevel(): Double = player.echoLevel()
+    fun echoResidual(mic: ShortArray): Double = player.echoResidual(mic)
+    fun aecErleDb(): Double = player.aecErleDb
 
     fun open(key: String, setup: JSONObject) {
         val setupText = setup.toString()

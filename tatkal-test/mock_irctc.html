@@ -1,0 +1,196 @@
+<!doctype html><html><head><meta charset="utf-8"><title>IRCTC mock</title>
+<style>
+ body{font-family:sans-serif} .hid{display:none} ul.ui-autocomplete-items{border:1px solid #999;padding:0;list-style:none;position:absolute;background:#fff;z-index:5}
+ li{padding:4px;cursor:pointer} .ui-dialog{position:fixed;top:60px;left:30px;width:340px;background:#fff;border:2px solid #333;padding:10px;z-index:9}
+ .ui-datepicker{position:absolute;background:#fff;border:1px solid #333;z-index:6;padding:6px}
+ .ui-dropdown-panel{position:absolute;background:#fff;border:1px solid #333;z-index:7}
+ td a{cursor:pointer;padding:2px 5px;display:inline-block} button[disabled]{opacity:.4}
+</style></head><body>
+<div id="hdr"><a id="hdrbtn" class="loginText">LOGIN</a></div>
+<div id="app"></div>
+<script>
+// ---------------- mock state / knobs the tests control ----------------
+const M = window.__mock = { openAt: 0, failBookClicks: 2, loggedIn: false, captcha: 'abc12', errors: 0, bookClicks: 0, log: [], autoLoad: 0,
+  stations: [['BETTIAH','BTH'],['SUGAULI JN','SGL'],['JAMMU TAWI','JAT'],['GORAKHPUR JN','GKP'],['NEW DELHI','NDLS'],['BARAUNI JN','BJU'],['BIHAR SHARIF','BEHS'],['BETUL','BZU']] };
+const st = { from:'', to:'', fromOk:false, toOk:false, date:'', cls:'', quota:'', pax:[{}], mobile:'', pay:'' };
+const $app = document.getElementById('app');
+const log = s => M.log.push(s);
+function go(p){ history.pushState({}, '', p); render(); }
+window.addEventListener('popstate', render);
+
+// ---------------- generic widgets ----------------
+function autocomplete(name, label){
+  return `<p-autocomplete formcontrolname="${name}" class="ng-invalid" data-name="${name}"><span><input id="${name}" placeholder="${label}" autocomplete="off"></span></p-autocomplete>`;
+}
+function wireAutocomplete(name){
+  const ctl = document.querySelector(`p-autocomplete[formcontrolname="${name}"]`), inp = ctl.querySelector('input');
+  let panel = null;
+  const close = () => { if (panel){ panel.remove(); panel=null; } };
+  const onType = () => {
+    st[name==='origin'?'fromOk':'toOk'] = false; ctl.classList.remove('ng-valid'); ctl.classList.add('ng-invalid');
+    const v = inp.value.trim().toUpperCase(); close(); if (v.length < 2) return;
+    setTimeout(() => {                                   // async like the real API
+      if (inp.value.trim().toUpperCase() !== v) return;
+      const hits = M.stations.filter(s => s[0].startsWith(v) || s[1] === v || s[0].includes(v));
+      if (!hits.length) return;
+      panel = document.createElement('ul'); panel.className = 'ui-autocomplete-items ui-autocomplete-list-item-wrapper';
+      hits.forEach(h => { const li = document.createElement('li'); li.setAttribute('role','option'); li.className='ui-autocomplete-list-item'; li.textContent = `${h[0]} - ${h[1]}`;
+        li.addEventListener('mousedown', e => { inp.value = `${h[0]} - ${h[1]}`; st[name==='origin'?'from':'to'] = h[1]; st[name==='origin'?'fromOk':'toOk'] = true;
+          ctl.classList.remove('ng-invalid'); ctl.classList.add('ng-valid'); close(); upd(); });
+        panel.appendChild(li); });
+      ctl.appendChild(panel);
+    }, 350);
+  };
+  inp.addEventListener('input', onType);
+  inp.addEventListener('keydown', e => { if (e.key==='Enter' && panel){ const li = panel.querySelector('li'); if (li) li.dispatchEvent(new MouseEvent('mousedown',{bubbles:true})); } });
+}
+function dropdown(name, items){
+  return `<p-dropdown formcontrolname="${name}" class="ng-invalid" data-items='${JSON.stringify(items)}'><div class="ui-dropdown"><label class="lbl">Select</label></div></p-dropdown>`;
+}
+function wireDropdown(name){
+  const ctl = document.querySelector(`p-dropdown[formcontrolname="${name}"]`), items = JSON.parse(ctl.dataset.items);
+  const box = ctl.querySelector('.ui-dropdown'), lbl = ctl.querySelector('.lbl');
+  box.addEventListener('click', () => {
+    document.querySelectorAll('.ui-dropdown-panel').forEach(x=>x.remove());
+    const pn = document.createElement('div'); pn.className='ui-dropdown-panel'; const ul = document.createElement('ul'); ul.className='ui-dropdown-items'; pn.appendChild(ul);
+    items.forEach(t => { const li = document.createElement('li'); li.className='ui-dropdown-item'; li.setAttribute('role','option'); li.textContent = t;
+      li.addEventListener('click', () => { lbl.textContent = t; st[name==='journeyClass'?'cls':'quota'] = t; ctl.classList.remove('ng-invalid'); ctl.classList.add('ng-valid'); pn.remove(); upd(); }); ul.appendChild(li); });
+    document.body.appendChild(pn);
+  });
+}
+function upd(){ const b = document.querySelector('button.search_btn'); if (b) b.disabled = !(st.fromOk && st.toOk && st.date && st.cls && st.quota); }
+
+// ---------------- pages ----------------
+function pageSearch(){
+  $app.innerHTML = `<h3>Book Ticket</h3>${autocomplete('origin','From')}${autocomplete('destination','To')}
+   <p-calendar formcontrolname="journeyDate" class="ng-invalid"><input id="jDate" placeholder="DD/MM/YYYY" readonly></p-calendar>
+   ${dropdown('journeyClass',['All Classes','AC First Class (1A)','AC 2 Tier (2A)','AC 3 Tier (3A)','Sleeper (SL)','Second Sitting (2S)'])}
+   ${dropdown('journeyQuota',['GENERAL','LADIES','TATKAL','PREMIUM TATKAL'])}
+   <button class="search_btn train_Search" disabled>Search</button>`;
+  wireAutocomplete('origin'); wireAutocomplete('destination'); wireDropdown('journeyClass'); wireDropdown('journeyQuota');
+  const ci = document.getElementById('jDate'), cal = document.querySelector('p-calendar'); let view = new Date(2026, 9, 1);
+  ci.addEventListener('click', () => { document.querySelectorAll('.ui-datepicker').forEach(x=>x.remove()); draw(); });
+  function draw(){
+    document.querySelectorAll('.ui-datepicker').forEach(x=>x.remove());
+    const d = document.createElement('div'); d.className='ui-datepicker';
+    const mn = ['January','February','March','April','May','June','July','August','September','October','November','December'][view.getMonth()];
+    let html = `<div class="ui-datepicker-header"><a class="ui-datepicker-prev">‹</a> <span class="ui-datepicker-month">${mn}</span> <span class="ui-datepicker-year">${view.getFullYear()}</span> <a class="ui-datepicker-next">›</a></div><table class="ui-datepicker-calendar"><tr>`;
+    const first = new Date(view.getFullYear(), view.getMonth(), 1).getDay(), days = new Date(view.getFullYear(), view.getMonth()+1, 0).getDate();
+    for (let i=0;i<first;i++) html += '<td class="ui-datepicker-other-month"></td>';
+    for (let i=1;i<=days;i++){ html += `<td><a class="ui-state-default">${i}</a></td>`; if ((first+i)%7===0) html += '</tr><tr>'; }
+    d.innerHTML = html + '</tr></table>'; cal.appendChild(d);
+    d.querySelector('.ui-datepicker-prev').addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth()-1, 1); draw(); });
+    d.querySelector('.ui-datepicker-next').addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth()+1, 1); draw(); });
+    d.querySelectorAll('td a').forEach(a => a.addEventListener('click', () => { const day = +a.textContent;
+      ci.value = `${String(day).padStart(2,'0')}/${String(view.getMonth()+1).padStart(2,'0')}/${view.getFullYear()}`; st.date = ci.value; cal.classList.remove('ng-invalid'); cal.classList.add('ng-valid'); d.remove(); upd(); }));
+  }
+  document.querySelector('button.search_btn').addEventListener('click', () => { M.log.push('SEARCH ' + JSON.stringify(st)); setTimeout(() => go('/nget/booking/train-list'), 500); });
+}
+function pageTrainList(){
+  const mk = (no, name) => `<app-train-avl-enq data-no="${no}"><div class="train-heading"><strong>${name} (${no})</strong></div>
+    <div class="classes"><div class="pre-avl cls" data-c="SL"><span>Sleeper (SL)</span></div><div class="pre-avl cls" data-c="3A"><span>AC 3 Tier (3A)</span></div></div>
+    <div class="dates hid"><div class="dt" data-t="Mon, 19 Oct">Mon, 19 Oct</div><div class="dt" data-t="Tue, 20 Oct">Tue, 20 Oct</div></div>
+    <button class="btn book" disabled>Book Now</button></app-train-avl-enq>`;
+  $app.innerHTML = `<h3>Trains</h3>` + mk('12345','OTHER EXPRESS') + mk('15273','SATYAGRAHA EXP');
+  document.querySelectorAll('app-train-avl-enq').forEach(card => {
+    const dts = card.querySelector('.dates'), btn = card.querySelector('.book'); let c = false, d = false;
+    const refresh = () => { const open = (M.alwaysEnabled || Date.now() >= M.openAt); const sold = open && c && (M.soldOut || []).includes((card.dataset.no||'') + ':' + (card.dataset.cls||''));
+      card.querySelectorAll('.dt').forEach(x => { x.textContent = x.dataset.t + (sold ? ' REGRET' : (c && open ? ' AVL 042' : '')); }); btn.disabled = !(c && d && open && !sold); };
+    card.querySelectorAll('.cls').forEach(x => x.addEventListener('click', () => { c = true; dts.classList.remove('hid'); card.dataset.cls = x.dataset.c; refresh(); }));
+    card.querySelectorAll('.dt').forEach(x => x.addEventListener('click', () => { d = true; x.classList.add('active'); refresh(); }));
+    setInterval(refresh, 100);
+    btn.addEventListener('click', () => {
+      M.bookClicks++; (M.clickTimes = M.clickTimes || []).push(Date.now());
+      if (M.bookClicks <= M.failBookClicks) { M.errors++; showDialog('Error', 'Unable to process your request. Please try after some time.', 'OK'); return; }
+      if (!M.loggedIn) { loginDialog(() => go('/nget/booking/psgninput')); return; }
+      go('/nget/booking/psgninput');
+    });
+  });
+}
+function showDialog(title, msg, okLabel){
+  const d = document.createElement('p-dialog'); d.className='ui-dialog'; d.setAttribute('role','dialog');
+  d.innerHTML = `<h4>${title}</h4><p>${msg}</p><button class="okb">${okLabel}</button>`; document.body.appendChild(d);
+  d.querySelector('.okb').addEventListener('click', () => d.remove());
+}
+function loginDialog(after){
+  const d = document.createElement('p-dialog'); d.className='ui-dialog keep'; d.setAttribute('role','dialog');
+  d.innerHTML = `<h4>Login</h4><input formcontrolname="userid" placeholder="User Name"><input type="password" formcontrolname="password" placeholder="Password">
+   <img alt="captcha" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" class="captcha-img"><input formcontrolname="captcha" id="captcha" placeholder="Enter Captcha">
+   <button class="signin" disabled>SIGN IN</button><div class="err"></div>`;
+  document.body.appendChild(d);
+  const u = d.querySelector('[formcontrolname=userid]'), p = d.querySelector('[type=password]'), c = d.querySelector('#captcha'), b = d.querySelector('.signin');
+  const chk = () => { b.disabled = !(u.value && p.value && c.value); }; [u,p,c].forEach(x => x.addEventListener('input', chk));
+  b.addEventListener('click', () => {
+    if (u.value === 'user1' && p.value === 'pass1' && c.value === M.captcha) { M.loggedIn = true; d.remove(); after(); }
+    else if (u.value !== 'user1' || p.value !== 'pass1') { M.log.push('BAD PW'); d.querySelector('.err').textContent = 'Invalid User ID or Password'; c.value = ''; chk(); }
+    else { M.log.push('LOGIN FAIL ' + u.value + '/' + c.value); d.querySelector('.err').textContent = 'Invalid Captcha'; c.value = ''; chk(); }
+  });
+}
+function pagePassengers(){
+  if (M.expireOnce && !M.expired) { M.expired = true; M.loggedIn = false; M.log.push('SESSION EXPIRED'); go('/nget/train-search'); return; }
+  $app.innerHTML = `<h3>Passenger Details</h3><div id="rows"></div><a class="addp"><span>+ Add Passenger / Infant</span></a>
+   <input formcontrolname="mobileNumber" placeholder="Mobile">
+   <p-checkbox formcontrolname="autoUpgradationSelected"><div class="ui-chkbox-box">auto</div><input type="checkbox"></p-checkbox>
+   <p-checkbox formcontrolname="bookOnlyIfCnf"><div class="ui-chkbox-box">cnf</div><input type="checkbox"></p-checkbox>
+   <div class="ins"><span>Travel insurance for this trip?</span><label class="iy"><span>Yes</span></label><label class="in"><span>No</span></label></div>
+   <div class="pm"><p-radiobutton><label><span>Pay through Credit &amp; Debit Cards, Wallets / UPI / Net banking</span></label></p-radiobutton>
+   <p-radiobutton><label><span>Pay through BHIM/UPI</span></label></p-radiobutton></div>
+   <button class="train_Search btnDefault" type="submit" disabled>Continue</button>`;
+  const rows = document.getElementById('rows');
+  function addRow(){
+    const r = document.createElement('app-passenger');
+    r.innerHTML = `<p-autocomplete><input class="ui-autocomplete-input" formcontrolname="passengerName" placeholder="Name"></p-autocomplete>
+     <input formcontrolname="passengerAge" placeholder="Age"><select formcontrolname="passengerGender"><option value="">Select</option><option value="M">Male</option><option value="F">Female</option><option value="T">Transgender</option></select>
+     <select formcontrolname="passengerBerthChoice"><option value="">No Preference</option><option value="LB">Lower</option><option value="MB">Middle</option><option value="UB">Upper</option></select>
+     <select formcontrolname="passengerNationality"><option value="">Select</option><option value="IN">India</option></select>`;
+    rows.appendChild(r); r.querySelectorAll('input,select').forEach(x => { x.addEventListener('input', chk); x.addEventListener('change', chk); }); chk();
+  }
+  addRow();
+  document.querySelector('.addp').addEventListener('click', () => addRow());
+  function chk(){ const ok = [...rows.children].every(r => r.querySelector('[formcontrolname=passengerName]').value && r.querySelector('[formcontrolname=passengerAge]').value && r.querySelector('[formcontrolname=passengerGender]').value);
+    document.querySelector('button.btnDefault').disabled = !ok; }
+  document.querySelector('[formcontrolname=mobileNumber]').addEventListener('input', chk);
+  document.querySelector('.ins .iy').addEventListener('click', () => M.log.push('INS yes')); document.querySelector('.ins .in').addEventListener('click', () => M.log.push('INS no'));
+  document.querySelectorAll('p-radiobutton').forEach(x => x.addEventListener('click', () => { M.log.push('PAYMODE ' + x.textContent.trim()); }));
+  document.querySelector('button.btnDefault').addEventListener('click', () => {
+    M.log.push('PAX ' + JSON.stringify([...rows.children].map(r => ['passengerName','passengerAge','passengerGender','passengerBerthChoice','passengerNationality'].map(n => r.querySelector(`[formcontrolname=${n}]`).value))) + ' mob=' + document.querySelector('[formcontrolname=mobileNumber]').value
+      + ' upg=' + document.querySelector('[formcontrolname=autoUpgradationSelected] input').checked);
+    go('/nget/booking/reviewbooking');
+  });
+  document.querySelectorAll('p-checkbox').forEach(c => c.querySelector('.ui-chkbox-box').addEventListener('click', () => { const i = c.querySelector('input'); i.checked = !i.checked; }));
+}
+function pageReview(){
+  $app.innerHTML = `<h3>Review Journey</h3><img alt="captcha" class="captcha-img" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><input formcontrolname="captcha" id="captcha" placeholder="Enter Captcha"><button class="btn-go" disabled>Continue</button>`;
+  const c = document.getElementById('captcha'), b = document.querySelector('.btn-go');
+  c.addEventListener('input', () => { b.disabled = !c.value; });
+  b.addEventListener('click', () => { if (c.value === M.captcha) go('/nget/payment/bkgPaymentOptions'); else { M.log.push('REVIEW CAPTCHA FAIL'); c.value=''; b.disabled=true; } });
+}
+function pagePayment(){
+  $app.innerHTML = `<h3>Payment</h3><div id="pay-type"><div class="bank-type bank-type-active">IRCTC iPay (Credit Card/Debit Card/Net Banking/UPI)</div><div class="bank-type">IRCTC eWallet</div></div>
+   <button class="btn btn-primary hidden-xs">Pay &amp; Book</button>`;
+  document.querySelectorAll('.bank-type').forEach(x => x.addEventListener('click', () => { document.querySelectorAll('.bank-type').forEach(y=>y.classList.remove('bank-type-active')); x.classList.add('bank-type-active'); M.payChoice = x.textContent.trim(); }));
+  document.querySelector('.btn-primary').addEventListener('click', () => { M.log.push('PAY ' + (M.payChoice||'ipay')); if (/eWallet/i.test(M.payChoice||'')) go('/nget/payment/ewallet-confirm'); else M.log.push('IPAY GATEWAY'); });
+}
+function pageWallet(){
+  if (M.lowBalance) { $app.innerHTML = `<app-ewallet-confirm><h3>eWallet</h3><p>Insufficient balance in your wallet</p></app-ewallet-confirm>`; return; }
+  $app.innerHTML = `<app-ewallet-confirm><h3>eWallet</h3><div class="inputBoxPad"><span>Balance</span><span>5000</span></div><button style="background:#fb792b">CONFIRM</button></app-ewallet-confirm>`;
+  document.querySelector('app-ewallet-confirm button').addEventListener('click', () => { M.log.push('WALLET CONFIRMED'); go('/nget/booking/bookingconfirm'); });
+}
+function pageDone(){ $app.innerHTML = `<h3>Booking Successful</h3><p>PNR Number : 4512345678</p>`; }
+
+function render(){
+  document.querySelectorAll('.ui-dialog:not(.keep),.ui-datepicker,.ui-dropdown-panel').forEach(x => x.remove());
+  const p = location.pathname.toLowerCase();
+  if (p.includes('train-list')) pageTrainList(); else if (p.includes('psgninput')) pagePassengers(); else if (p.includes('reviewbooking')) pageReview();
+  else if (p.includes('ewallet-confirm')) pageWallet(); else if (p.includes('bkgpaymentoptions')) pagePayment(); else if (p.includes('bookingconfirm')) pageDone(); else if (p.includes('denied')) $app.innerHTML = '<h1>Access Denied</h1><p>You don\'t have permission to access this server. Reference #18.2f4a1b</p>'; else pageSearch();
+}
+render();
+if (new URLSearchParams(location.search).get('notice')) showDialog('Confirmation', 'Only Aadhaar-verified users can book tatkal tickets; to skip this information and proceed, press the Enter key.', 'OK');
+</script></body></html>
+
+<script>
+(function(){ const b = document.getElementById('hdrbtn');
+  const sync = () => { b.textContent = window.__mock.loggedIn ? 'LOGOUT' : 'LOGIN'; }; setInterval(sync, 100);
+  b.addEventListener('click', () => { if (window.__mock.loggedIn) { window.__mock.log.push('LOGOUT CLICKED'); return; } if (!document.querySelector('.ui-dialog input[type=password]')) { window.__mock.log.push('HEADER LOGIN'); loginDialog(() => {}); } });
+})();
+</script>

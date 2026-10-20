@@ -51,6 +51,9 @@ class RedshotService : Service() {
             enrollHave = 0
             instance?.ear?.enrollWanted = sentences
         }
+        /** Tatkal screen -> owner: say it with the live voice, and keep a trail in the brain log. */
+        fun tatkalSay(text: String) { instance?.let { i -> Thread { if (!i.speakViaLive(text)) i.speaker?.say(text, "hi-IN") }.start() } }
+        fun tatkalLog(content: String) { instance?.log("tatkal", content) }
         val enrolling: Boolean get() = (instance?.ear?.enrollWanted ?: 0) > 0
 
         private val SERVER_TOOLS = setOf("web_fetch", "calculate", "utility", "currency_rate", "weather", "geocode", "ip_lookup", "stock_quote", "image_generate", "url_safety", "translate_text", "deep_think")
@@ -284,7 +287,7 @@ class RedshotService : Service() {
 
     // ---------- logging (so problems can be fixed from facts) ----------
 
-    private fun log(kind: String, content: String) {
+    internal fun log(kind: String, content: String) {
         if (content.isBlank()) return
         logQ.add(JSONObject().put("kind", kind).put("content", content.take(1000)))
         while (logQ.size > 200) logQ.poll()
@@ -389,7 +392,7 @@ class RedshotService : Service() {
     }
 
     /** The phone itself wants to say something (reminder, local answer): same live voice, mic open for a reply. */
-    private fun speakViaLive(text: String): Boolean {
+    internal fun speakViaLive(text: String): Boolean {
         if (!loadLiveConfig()) return false
         synchronized(liveLock) {
             var s = session
@@ -558,8 +561,8 @@ class RedshotService : Service() {
             modelSpeaking = speaking
             lastLiveActivity = System.currentTimeMillis()
             ear?.modelTalking = speaking
-            if (speaking) { ear?.gate?.bargeEnabled = headsetOn(); takeFocus(); live = "live: bol raha hoon" }
-            else { ear?.gate?.let { log("audio", "mic ne suna: echoPeak=${it.echoPeak.toInt()} headset=${it.bargeEnabled}") }; lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
+            if (speaking) { ear?.gate?.let { g -> g.bargeEnabled = headsetOn(); g.useRef = true; g.ref = { session?.echoLevel() ?: 0.0 }; g.aec = { b -> session?.echoResidual(b) ?: -1.0 } }; takeFocus(); live = "live: bol raha hoon" }
+            else { ear?.gate?.let { log("audio", "mic ne suna: echoPeak=${it.echoPeak.toInt()} headset=${it.bargeEnabled} erle=${(session?.aecErleDb() ?: 0.0).toInt()}dB") }; lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 
         override fun onAudioStats(s: String) { log("audio", s) }

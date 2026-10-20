@@ -31,6 +31,7 @@ class PcmPlayer(
     private val newSink: () -> PcmSink,
     private val onSpeaking: (Boolean) -> Unit,
     private val onStats: (String) -> Unit = {},
+    val echo: EchoRef = EchoRef(),
 ) {
     companion object {
         const val BYTES_PER_MS = 48
@@ -50,12 +51,20 @@ class PcmPlayer(
     @Volatile private var gen = 0
     private val thread = Thread { loop() }.also { it.name = "redshot-player"; it.isDaemon = true; it.start() }
 
+    /** loudness of what the speaker is playing at this very moment (see EchoRef); 0 when nothing plays */
+    private val canceller = EchoCanceller()
+    /** the mic frame with the speaker's own sound subtracted (rms), or -1 when nothing is playing */
+    fun echoResidual(mic: ShortArray): Double { val s = sink ?: return -1.0; return canceller.process(mic, echo, s.headFrames(), System.nanoTime()) }
+    val aecErleDb: Double get() = canceller.erleDb
+    fun echoLevel(): Double { val s = sink ?: return 0.0; return echo.level(s.headFrames()) }
+
     fun enqueue(b: ByteArray) { if (b.isNotEmpty()) q.add(Chunk(gen, b)) }
 
     /** Silence right now (owner talked over it). Safe from any thread. */
     fun flush() {
         gen++
         q.clear()
+        echo.clear()
         val s: PcmSink?
         synchronized(lock) { s = sink; sink = null }
         try { s?.cut() } catch (e: Throwable) {}
@@ -89,7 +98,7 @@ class PcmPlayer(
         var lastHead = -1L
         var headMovedAt = 0L
 
-        fun reset() { pre.clear(); preBytes = 0; started = false; written = 0; speechBytes = 0; chunks = 0; local = null; lastHead = -1L; headMovedAt = 0L }
+        fun reset() { echo.clear(); pre.clear(); preBytes = 0; started = false; written = 0; speechBytes = 0; chunks = 0; local = null; lastHead = -1L; headMovedAt = 0L }
 
         fun put(s: PcmSink, b: ByteArray) {
             var off = 0
@@ -99,6 +108,7 @@ class PcmPlayer(
                 if (w <= 0) break
                 off += w
             }
+            echo.add(b, 0, off)
             written += off / 2
         }
 

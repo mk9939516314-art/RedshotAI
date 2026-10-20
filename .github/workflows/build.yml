@@ -41,8 +41,29 @@ jobs:
         run: |
           grep -rhE "AssertionError|FAILED|Exception" app/build/outputs/androidTest-results 2>/dev/null | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done || true
 
+  tatkal-engine-test:
+    # the real engine.js against an IRCTC-style (Angular/PrimeNG) replica in headless Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+      - name: Run engine tests
+        run: |
+          cd tatkal-test
+          python run_tests.py | tee ../engine.log
+          rc=${PIPESTATUS[0]}
+          grep -E "^FAIL" ../engine.log | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          exit $rc
+
   build:
-    needs: device-test
+    needs: [device-test, tatkal-engine-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
