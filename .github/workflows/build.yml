@@ -35,11 +35,33 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -camera-back none
-          script: gradle connectedDebugAndroidTest -PtestAbi=true --stacktrace
+          script: gradle connectedDebugAndroidTest -PtestAbi=true --stacktrace 2>&1 | tee dt.log
       - name: Show device test failures
         if: failure()
         run: |
+          grep -E "^e: " dt.log 2>/dev/null | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done || true
           grep -rhE "AssertionError|FAILED|Exception" app/build/outputs/androidTest-results 2>/dev/null | head -20 | while IFS= read -r l; do echo "::error::${l:0:400}"; done || true
+
+  unit-test:
+    # compile + JVM unit tests, fast feedback with the compiler errors shown as annotations
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Compile and unit tests
+        run: |
+          set +e
+          gradle testDebugUnitTest --stacktrace 2>&1 | tee test.log
+          rc=${PIPESTATUS[0]}
+          grep -E "^e: |FAILED|AssertionError|Exception|expected" test.log | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          exit $rc
 
   tatkal-engine-test:
     # the real engine.js against an IRCTC-style (Angular/PrimeNG) replica in headless Chromium
@@ -63,7 +85,7 @@ jobs:
           exit $rc
 
   build:
-    needs: [device-test, tatkal-engine-test]
+    needs: [device-test, tatkal-engine-test, unit-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
