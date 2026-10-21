@@ -167,14 +167,29 @@ class TatkalActivity : Activity() {
         }.also { it.isDaemon = true }.start()
     }
 
+    /**
+     * The Date header is cut to whole seconds, so one sample can be off by up to a second.
+     * Each sample bounds the skew: [d - t1, d + 1000 - t0). Many samples at different offsets inside
+     * the second intersect to a window of a few tens of ms; the middle of it is the clock.
+     */
     private fun serverSkew(): Long? {
         for (u in listOf("https://www.irctc.co.in/", "https://www.google.com/", "https://www.cloudflare.com/")) {
-            try {
-                val c = URL(u).openConnection() as HttpURLConnection
-                c.requestMethod = "HEAD"; c.connectTimeout = 3500; c.readTimeout = 3500
-                val t0 = System.currentTimeMillis(); val d = c.date; val t1 = System.currentTimeMillis(); c.disconnect()
-                if (d > 0) return d - (t0 + t1) / 2
-            } catch (e: Exception) {}
+            var lo = Long.MIN_VALUE; var hi = Long.MAX_VALUE; var n = 0; var first = 0L
+            for (i in 0 until 14) {
+                try {
+                    val c = URL(u).openConnection() as HttpURLConnection
+                    c.requestMethod = "HEAD"; c.connectTimeout = 2500; c.readTimeout = 2500
+                    val t0 = System.currentTimeMillis(); val d = c.date; val t1 = System.currentTimeMillis(); c.disconnect()
+                    if (d <= 0) continue
+                    if (n == 0) first = d - (t0 + t1) / 2
+                    n++
+                    lo = maxOf(lo, d - t1); hi = minOf(hi, d + 1000 - t0)
+                    if (n >= 3 && hi - lo in 0L..60L) break
+                } catch (e: Exception) { if (n == 0) break }
+                try { Thread.sleep(71L + i * 13L) } catch (e: InterruptedException) { return null }
+            }
+            if (n == 0) continue
+            return if (hi >= lo) (lo + hi) / 2 else first
         }
         return null
     }

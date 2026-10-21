@@ -423,7 +423,7 @@
     if (o && !st.refreshed && now() >= o - 400 && dateTile) { st.refreshed = true; mouseClick(dateTile); await sleep(60); }      // re-pull availability right at the opening
     if (o && now() < o - 120) { await sleep(25); return; }      // everything selected; fire at the exact opening moment
     // quota open: hammer Book Now until the page moves on (IRCTC drops the first clicks under load)
-    if (!st.bookClickedAt || Date.now() - st.bookClickedAt > 600 + Math.random() * 500) {
+    if (!st.bookClickedAt || Date.now() - st.bookClickedAt > ((st.bookClicks || 0) < 6 ? 250 + Math.random() * 150 : 600 + Math.random() * 500)) {
       st.bookClickedAt = Date.now(); st.bookClicks = (st.bookClicks || 0) + 1;
       safeClick(book, 'book now #' + st.bookClicks);
       if (st.bookClicks === 1) log('Book Now clicked'); if (st.bookClicks > 60) fail('Book Now did not go through');
