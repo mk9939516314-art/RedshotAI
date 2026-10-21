@@ -61,9 +61,9 @@ class RefBargeDetector {
     companion object {
         const val LEARN_MS = 1500L          // the canceller needs about a second to converge
         const val MIN_LEVEL = 1800.0
-        const val FACTOR = 1.8
-        const val MARGIN = 400.0
-        const val NEED = 12.0               // leaky counter: loud frames count 1, quiet frames take 0.5 back (speech has gaps)
+        const val FACTOR = 2.1
+        const val MARGIN = 800.0
+        const val NEED = 10.0               // leaky counter: loud frames count 1, quiet frames take 0.5 back (speech has gaps)
         const val MIN_REF = 500.0
     }
     private var gain = 0.0                  // residual per unit of speaker level
@@ -71,7 +71,7 @@ class RefBargeDetector {
 
     fun reset() { gain = 0.0; run = 0.0 }
 
-    fun onFrame(resid: Double, ref: Double, msSinceStart: Long): Boolean {
+    fun onFrame(resid: Double, ref: Double, msSinceStart: Long, converged: Boolean = true): Boolean {
         val q = if (ref >= MIN_REF) resid / ref else 0.0
         if (msSinceStart < LEARN_MS) { if (q > gain) gain = q; run = 0.0; return false }
         gain *= 0.99
@@ -82,7 +82,7 @@ class RefBargeDetector {
             run = maxOf(0.0, run - 0.5); return false
         }
         run += 1.0
-        if (run >= NEED) { run = 0.0; return true }
+        if (run >= NEED) { run = 0.0; return converged }
         return false
     }
 }

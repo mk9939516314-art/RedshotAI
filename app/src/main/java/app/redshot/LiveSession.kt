@@ -64,6 +64,7 @@ class LiveSession(private val host: Host) {
     fun echoLevel(): Double = player.echoLevel()
     fun echoResidual(mic: ShortArray): Double = player.echoResidual(mic)
     fun aecErleDb(): Double = player.aecErleDb
+    fun aecConverged(): Boolean = player.aecConverged
 
     fun open(key: String, setup: JSONObject) {
         val setupText = setup.toString()

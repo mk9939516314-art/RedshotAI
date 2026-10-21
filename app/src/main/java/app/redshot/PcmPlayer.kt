@@ -56,6 +56,7 @@ class PcmPlayer(
     /** the mic frame with the speaker's own sound subtracted (rms), or -1 when nothing is playing */
     fun echoResidual(mic: ShortArray): Double { val s = sink ?: return -1.0; return canceller.process(mic, echo, s.headFrames(), System.nanoTime()) }
     val aecErleDb: Double get() = canceller.erleDb
+    val aecConverged: Boolean get() = canceller.converged
     fun echoLevel(): Double { val s = sink ?: return 0.0; return echo.level(s.headFrames()) }
 
     fun enqueue(b: ByteArray) { if (b.isNotEmpty()) q.add(Chunk(gen, b)) }

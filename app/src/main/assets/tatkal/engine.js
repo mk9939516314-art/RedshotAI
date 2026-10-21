@@ -283,6 +283,12 @@
   async function onDialog() {
     var dlg = infoDialog(); if (!dlg) return;
     var btn = buttonByText(dlg, /^(ok|okay|yes|close|got it|continue|proceed|accept|i agree|english|dismiss)$/i) || qs('.ui-dialog-titlebar-close, .p-dialog-header-close', dlg);
+    var sig = norm(txt(dlg)).slice(0, 80); st.dlg = st.dlg || {}; var rec = st.dlg[sig] = st.dlg[sig] || { n: 0, t0: Date.now() };
+    if (Date.now() - rec.t0 > 60000) { rec.n = 0; rec.t0 = Date.now(); }
+    rec.n++;
+    if (rec.n >= 8 && /not (available|allowed|running|permitted)|no (seats|trains)|booking (is )?not|invalid|restricted|quota/i.test(txt(dlg))) {
+      fail('IRCTC baar baar ye bol raha hai: ' + txt(dlg).slice(0, 110), true); return;      // same refusal again and again: stop instead of spamming IRCTC
+    }
     if (btn) { log('dialog: ' + txt(dlg).slice(0, 60)); safeClick(btn, 'dialog ok'); await sleep(300); }
   }
 

@@ -147,6 +147,10 @@ try:
     # 16) Access Denied page is recognised
     r = run('denied', url='/nget/denied', until=('blocked', 'error'), timeout=30)
     check('Access Denied page is reported as blocked', r['outcome'] and r['outcome'][0] == 'blocked', (r['outcome'], r['elog'][-3:]))
+    # 17) IRCTC keeps refusing (quota not available): stops instead of spamming
+    r = run('refuse', job_over=dict(payMode='manual'), mock=dict(failBookClicks=0, refuse=True), open_in_ms=1500, until=('payment_ready', 'error'), timeout=120)
+    check('repeated refusal ends as an honest error', r['outcome'] and r['outcome'][0] == 'error' and 'quota' in r['outcome'][1].get('msg', '').lower(), (r['outcome'], r['elog'][-4:]))
+    check('it did not spam Book Now forever', r['mock']['bookClicks'] <= 14, r['mock'])
 finally:
     srv.terminate()
 

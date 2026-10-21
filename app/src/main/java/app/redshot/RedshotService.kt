@@ -561,7 +561,7 @@ class RedshotService : Service() {
             modelSpeaking = speaking
             lastLiveActivity = System.currentTimeMillis()
             ear?.modelTalking = speaking
-            if (speaking) { ear?.gate?.let { g -> g.bargeEnabled = headsetOn(); g.useRef = true; g.ref = { session?.echoLevel() ?: 0.0 }; g.aec = { b -> session?.echoResidual(b) ?: -1.0 } }; takeFocus(); live = "live: bol raha hoon" }
+            if (speaking) { ear?.gate?.let { g -> g.bargeEnabled = headsetOn(); g.useRef = true; g.ref = { session?.echoLevel() ?: 0.0 }; g.aec = { b -> session?.echoResidual(b) ?: -1.0 }; g.aecConverged = { session?.aecConverged() ?: false } }; takeFocus(); live = "live: bol raha hoon" }
             else { ear?.gate?.let { log("audio", "mic ne suna: echoPeak=${it.echoPeak.toInt()} headset=${it.bargeEnabled} erle=${(session?.aecErleDb() ?: 0.0).toInt()}dB") }; lastSpeakEnd = System.currentTimeMillis(); abandonFocus(); ear?.gateTailUntil = System.currentTimeMillis() + 400; if (liveActive) live = "live: sun raha hoon" }
         }
 

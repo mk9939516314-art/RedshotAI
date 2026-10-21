@@ -101,6 +101,7 @@ function pageTrainList(){
     setInterval(refresh, 100);
     btn.addEventListener('click', () => {
       M.bookClicks++; (M.clickTimes = M.clickTimes || []).push(Date.now());
+      if (M.refuse) { showDialog('Information', 'Tatkal quota is not available for this train today', 'OK'); return; }
       if (M.bookClicks <= M.failBookClicks) { M.errors++; showDialog('Error', 'Unable to process your request. Please try after some time.', 'OK'); return; }
       if (!M.loggedIn) { loginDialog(() => go('/nget/booking/psgninput')); return; }
       go('/nget/booking/psgninput');

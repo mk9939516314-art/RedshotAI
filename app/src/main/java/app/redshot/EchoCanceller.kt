@@ -11,7 +11,7 @@ class EchoCanceller(private val taps: Int = 1600, private val mu: Float = 0.5f, 
     private var win = FloatArray(0)
     private var headEst = 0.0
     private var lastNs = 0L
-    private var converged = false
+    @Volatile var converged = false; private set
     private var curMu = mu
     @Volatile var lastMicRms = 0.0
     @Volatile var erleDb = 0.0
