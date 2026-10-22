@@ -79,8 +79,9 @@ class TatkalActivity : Activity() {
         web = WebView(this)
         val s = web.settings
         s.javaScriptEnabled = true; s.domStorageEnabled = true; s.databaseEnabled = true
-        s.userAgentString = "Mozilla/5.0 (Linux; Android 15; RMX5000) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        s.userAgentString = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"     // desktop site: the layout the engine (and every IRCTC script) is built for
         s.loadWithOverviewMode = true; s.useWideViewPort = true
+        s.setSupportZoom(true); s.builtInZoomControls = true; s.displayZoomControls = false
         s.setSupportMultipleWindows(false)
         s.javaScriptCanOpenWindowsAutomatically = true
         CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
@@ -148,7 +149,7 @@ class TatkalActivity : Activity() {
     private fun startJob(i: Intent) {
         job = try { JSONObject(i.getStringExtra("job") ?: "{}") } catch (e: Exception) { JSONObject() }
         val (u, pw) = Tatkal.credentials(this)
-        job.put("username", u).put("password", pw)
+        if (job.optBoolean("checkOnly")) job.put("username", "").put("password", "") else job.put("username", u).put("password", pw)
         netFails = 0; blockedN = 0; stuckN = 0
         loadEngineOverride()
         setStatus("shuru ho raha hai…")
@@ -242,6 +243,11 @@ class TatkalActivity : Activity() {
             "stage" -> { val st = d.optString("stage", TatkalState.stage); TatkalState.stage = st; setStatus(st); if (st != "other") { blockedN = 0; stuckN = 0 } }
             "log" -> { val m = d.optString("msg", d.optString("m", "")); TatkalState.last = m; setStatus(m); RedshotService.tatkalLog(m) }
             "armed" -> { TatkalState.stage = "armed"; setStatus("tayyar, tatkal khulne ka intezaar"); RedshotService.tatkalSay("Main tayyar hu, tatkal khulte hi book karunga.") }
+            "availability" -> {
+                val t = d.optString("text"); TatkalState.stage = "checked"; TatkalState.last = "availability: $t"; setStatus(t)
+                RedshotService.tatkalLog("availability: $t"); RedshotService.tatkalSay("Dekha: $t")
+                ui.postDelayed({ finish() }, 5000)
+            }
             "need_login" -> { TatkalState.stage = "login"; setStatus("login details nahi hain"); RedshotService.tatkalSay("IRCTC id aur password save nahi hain. Tatkal setup khol deta hu, wahan daal do.") ; ui.post { startActivity(Intent(this, TatkalSetupActivity::class.java)) } }
             "captcha" -> { buzz(); setStatus("CAPTCHA daalo"); RedshotService.tatkalSay(if (d.optBoolean("again")) "Captcha abhi baaki hai, daal do." else "Captcha daal do, baaki main kar dunga.") }
             "payment_ready" -> {

@@ -49,7 +49,9 @@ class RedshotNotifs : NotificationListenerService() {
             val want = Apps.norm(to)
             val cand = recent.firstOrNull { it.canReply && (want.isEmpty() || Apps.norm(it.title).contains(want) || Apps.norm(label(it.pkg)).contains(want) || it.key == to) }
                 ?: return "error: '$to' ka koi reply-layak message notification abhi nahi hai (shayad pehle hi dismiss ho gaya)"
-            return sendReply(cand.key, text)
+            val res = sendReply(cand.key, text)
+            if (res.startsWith("ok")) { Convo.add(cand.title, "me", text); if (AwayMode.active) AwayLog.add(cand.title + " ko jawab diya: " + text) }
+            return res
         }
 
         @Synchronized fun sendReply(key: String, text: String): String {

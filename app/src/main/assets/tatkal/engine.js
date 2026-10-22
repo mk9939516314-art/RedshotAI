@@ -113,13 +113,27 @@
     if (/unable to process|something went wrong|try again|session (has )?(expired|timed)|high (load|traffic)|service (is )?(temporarily )?unavailable|technical (error|difficult)/i.test(t)) return dlg;
     return null;
   }
+  function dialogs() {
+    return qsa('p-dialog, p-confirmdialog, [role="dialog"], .ui-dialog, .p-dialog, .modal-dialog').filter(visible).filter(function (d) {
+      return !/disha|chat ?bot|cookie/i.test((d.id || '') + ' ' + (d.className || '') + ' ' + txt(d).slice(0, 30));       // the chat helper / cookie bar are not notices that block the page
+    });
+  }
+  function dismissBtn(dlg) {
+    return buttonByText(dlg, /^(ok|okay|yes|close|got it|continue|proceed|accept|i agree|english|dismiss|no thanks|later|skip|understood|agree|\u00d7|x)$/i)
+      || qs('.ui-dialog-titlebar-close, .p-dialog-header-close, button[aria-label*="close" i], [class*="close" i], .pi-times, .fa-times', dlg);
+  }
   function infoDialog() {        // harmless notices that only need an OK (language, aadhaar notice, alerts)
-    var dlg = qsa('p-dialog, p-confirmdialog, [role="dialog"], .ui-dialog, .p-dialog').filter(visible)[0];
-    if (!dlg) return null;
-    if (qs('input[type="password"]', dlg)) return null;                       // that is the login window
-    var t = txt(dlg);
-    if (/payment|pay (&|and) book|cancel (your )?(ticket|booking)|logout|log out/i.test(t)) return null; // never auto-dismiss these
-    return dlg;
+    var all = dialogs();
+    for (var i = 0; i < all.length; i++) {
+      var dlg = all[i];
+      if (qs('input[type="password"]', dlg)) continue;                       // that is the login window
+      var t = txt(dlg); if (!t) continue;
+      if (/payment|pay (&|and) book|cancel (your )?(ticket|booking)|logout|log out/i.test(t)) continue; // never auto-dismiss these
+      var sig = norm(t).slice(0, 80);
+      if (st.deadDlg && st.deadDlg[sig] >= 3 && !dismissBtn(dlg)) continue;     // a popup nothing can close: stop waiting for it, carry on with the page underneath
+      return dlg;
+    }
+    return null;
   }
   function loginDialog() {
     var pw = qsa('input[type="password"]').filter(visible)[0];
@@ -212,8 +226,55 @@
     return s;
   }
 
+  // ---- fields are found by their IRCTC ids first, then by what they ARE (placeholder / label / role), so a renamed form still works
+  function findField(kind) {
+    var sels = kind === 'origin' ? ['p-autocomplete[formcontrolname="origin"]', '#origin'] : kind === 'destination' ? ['p-autocomplete[formcontrolname="destination"]', '#destination'] : ['p-calendar[formcontrolname="journeyDate"]', '#jDate'];
+    for (var i = 0; i < sels.length; i++) { var c = qs(sels[i]); if (c && visible(c)) return c; }
+    var re = kind === 'origin' ? /\bfrom\b|origin|source|boarding|departure/i : kind === 'destination' ? /\bto\b|destination|arrival/i : /date|calendar|journey/i;
+    var inputs = qsa('input').filter(function (x) { return visible(x) && !/^(checkbox|radio|password|hidden|button|submit)$/.test(x.type); });
+    var hit = inputs.filter(function (x) { return re.test([x.placeholder, x.getAttribute('aria-label'), x.id, x.name, x.getAttribute('formcontrolname')].filter(Boolean).join(' ')); })[0];
+    return hit || (kind === 'date' ? (qsa('p-calendar input, .p-calendar input, .ui-calendar input').filter(visible)[0] || null) : null);
+  }
+  function findDropdown(kind) {
+    var sels = kind === 'class' ? ['p-dropdown[formcontrolname="journeyClass"]', '#journeyClass'] : ['p-dropdown[formcontrolname="journeyQuota"]', '#journeyQuota'];
+    for (var i = 0; i < sels.length; i++) { var c = qs(sels[i]); if (c && visible(c)) return c; }
+    var re = kind === 'class' ? /all classes|sleeper|ac chair|first class|second sitting|3a|2a|1a|\bsl\b|\bcc\b/i : /general|tatkal|ladies|lower berth|person with disability|duty pass|premium/i;
+    var all = qsa('p-dropdown, .p-dropdown, .ui-dropdown, select').filter(function (d) { return visible(d) && txt(d).length < 80; });
+    var byText = all.filter(function (d) { return re.test(txt(d)); })[0];
+    if (byText) return byText;
+    var top = qsa('p-dropdown, .p-dropdown, select').filter(function (d) { return visible(d) && !d.parentElement.closest('p-dropdown, .p-dropdown'); });
+    return (kind === 'class' ? top[0] : top[1]) || null;      // last resort: the form lists Class first, Quota second
+  }
+  function dismissLanguage() {        // the English / Hindi chooser is not a button: it is clicked by its words
+    if (st.langAt && Date.now() - st.langAt < 6000) return false;
+    var el = smallestWithText(document, function (t, e) {
+      if (t !== 'English' && t !== 'ENGLISH') return false;
+      var up = e.parentElement && e.parentElement.parentElement || e.parentElement;
+      return !!up && /hindi|\u0939\u093f\u0928\u094d\u0926\u0940|\u0939\u093f\u0902\u0926\u0940/i.test(txt(up)) && txt(up).length < 400;
+    });
+    if (!el) return false;
+    st.langAt = Date.now(); mouseClick(el.closest('button, a, li, label, [role="button"], [role="radio"]') || el); log('language popup: English chosen'); return true;
+  }
+  // a compact map of what is really on the page, written to the brain log so a wrong guess can be fixed without a new app
+  function domMap() {
+    var out = [];
+    qsa('input, select, textarea, button, a, p-dropdown, p-autocomplete, p-calendar, [role="button"], [role="dialog"], p-dialog, [role="radio"], [role="tab"]').filter(visible).slice(0, 70).forEach(function (e) {
+      var a = [e.tagName.toLowerCase()];
+      ['id', 'formcontrolname', 'name', 'type', 'placeholder', 'aria-label', 'role'].forEach(function (k) { var v = e.getAttribute(k); if (v) a.push(k.replace('formcontrolname', 'fc') + '=' + String(v).slice(0, 28)); });
+      var c = (typeof e.className === 'string' ? e.className : '').split(/\s+/).filter(Boolean).slice(0, 2).join('.'); if (c) a.push('.' + c.slice(0, 30));
+      var t = txt(e).slice(0, 22); if (t) a.push('"' + t + '"');
+      out.push(a.join(' '));
+    });
+    return out.join(' ; ');
+  }
+  function dumpDom(why) {
+    RS.dumps = (RS.dumps || 0) + 1; if (RS.dumps > 14) return;
+    var m = domMap(), n = Math.ceil(m.length / 850) || 1;
+    for (var i = 0; i < n && i < 5; i++) log('dom[' + why + ' ' + path() + ' ' + (i + 1) + '/' + n + '] ' + m.slice(i * 850, (i + 1) * 850));
+  }
+
   async function fillStation(field, code, name) {
-    var ctl = qs('p-autocomplete[formcontrolname="' + field + '"]') || qs('#' + field);
+    var ctl = findField(field);
     var input = ctl && (ctl.tagName === 'INPUT' ? ctl : qs('input', ctl));
     if (!input) return false;
     var want = { code: code, name: name };
@@ -257,7 +318,7 @@
     m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? { d: +m[3], mo: +m[2] - 1, y: +m[1] } : null;
   }
   async function fillDate(value) {
-    var t = parseDate(value), ctl = qs('p-calendar[formcontrolname="journeyDate"]') || qs('#jDate');
+    var t = parseDate(value), ctl = findField('date');
     var input = ctl && (ctl.tagName === 'INPUT' ? ctl : qs('input', ctl));
     if (!t || !input) return false;
     var f = ('0' + t.d).slice(-2) + '/' + ('0' + (t.mo + 1)).slice(-2) + '/' + t.y;
@@ -282,7 +343,7 @@
   // ---------------------------------------------------------------- stages
   async function onDialog() {
     var dlg = infoDialog(); if (!dlg) return;
-    var btn = buttonByText(dlg, /^(ok|okay|yes|close|got it|continue|proceed|accept|i agree|english|dismiss)$/i) || qs('.ui-dialog-titlebar-close, .p-dialog-header-close', dlg);
+    var btn = dismissBtn(dlg);
     var sig = norm(txt(dlg)).slice(0, 80); st.dlg = st.dlg || {}; var rec = st.dlg[sig] = st.dlg[sig] || { n: 0, t0: Date.now() };
     if (Date.now() - rec.t0 > 60000) { rec.n = 0; rec.t0 = Date.now(); }
     rec.n++;
@@ -290,6 +351,17 @@
       fail('IRCTC baar baar ye bol raha hai: ' + txt(dlg).slice(0, 110), true); return;      // same refusal again and again: stop instead of spamming IRCTC
     }
     if (btn) { log('dialog: ' + txt(dlg).slice(0, 60)); safeClick(btn, 'dialog ok'); await sleep(300); }
+    else {
+      st.deadDlg = st.deadDlg || {}; st.deadDlg[sig] = (st.deadDlg[sig] || 0) + 1;
+      if (st.deadDlg[sig] === 1 || st.deadDlg[sig] === 3) log('popup without a button: ' + txt(dlg).slice(0, 100) + ' || ' + (dlg.outerHTML || '').replace(/\s+/g, ' ').slice(0, 260));
+      try { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true })); } catch (e) {}
+      await sleep(250);
+    }
+  }
+  function snap() {
+    var d = dialogs().map(function (x) { return txt(x).slice(0, 70); });
+    var bt = qsa('button, a').filter(visible).map(function (x) { return txt(x).slice(0, 18); }).filter(Boolean).slice(0, 14);
+    return path() + ' dlg=[' + d.join(' | ') + '] btn=[' + bt.join(', ') + ']';
   }
 
   async function onError() {
@@ -346,7 +418,10 @@
   async function onSearch() {
     var j = RS.job;
     if (st.searchClicked && Date.now() - st.searchClicked < 15000) return;      // waiting for results
-    if (!qs('p-autocomplete[formcontrolname="origin"]') && !qs('#origin')) { return; }
+    if (!findField('origin')) {
+      if (Date.now() - (st.noFormAt || 0) > 8000) { st.noFormAt = Date.now(); log('search form not on this page yet (' + path() + ')'); dumpDom('noform'); }
+      return;
+    }
     ensureLogin();
     if (st.searchTries > 40) { fail('search form could not be filled'); return; }
     st.searchTries = (st.searchTries || 0) + 1;
@@ -354,8 +429,17 @@
     var ok1 = await fillStation('origin', j.from, j.fromName);
     var ok2 = await fillStation('destination', j.to, j.toName);
     var ok3 = await fillDate(j.date);
-    var okC = await chooseDropdown(qs('p-dropdown[formcontrolname="journeyClass"]') || qs('#journeyClass'), j.cls ? (CLASS_LABELS[j.cls] || j.cls) : 'All Classes', j.cls);
-    var okQ = await chooseDropdown(qs('p-dropdown[formcontrolname="journeyQuota"]') || qs('#journeyQuota'), QUOTA_LABELS[j.quota || 'GN'] || j.quota, null);
+    var okC = await chooseDropdown(findDropdown('class'), j.cls ? (CLASS_LABELS[j.cls] || j.cls) : 'All Classes', j.cls);
+    var okQ = await chooseDropdown(findDropdown('quota'), QUOTA_LABELS[j.quota || 'GN'] || j.quota, null);
+    if (j.checkOnly && ok1 && ok2 && !ok3 && st.searchTries >= 3) { emit('availability', { text: 'is date ki booking abhi khuli nahi hai (IRCTC calendar me date disabled)', train: j.trainNo, cls: j.cls, date: j.date }); RS.stop(); return; }
+    var so = openAt();
+    if (!ok3 && so && now() < so + 8000) {          // advance date not selectable yet: sit logged-in on this form until the window opens
+      st.searchTries--; var left = so - now();
+      if (!st.armedAt) { st.armedAt = Date.now(); emit('armed', { inMs: left }); }
+      if (!st.waitLog || Date.now() - st.waitLog > 20000) { st.waitLog = Date.now(); log('date not open yet, opens in ' + Math.round(left / 1000) + 's'); }
+      if (!loggedIn() && secret.user) ensureLogin();
+      await sleep(left > 15000 ? 1500 : 120); return;
+    }
     log('search form: from=' + ok1 + ' to=' + ok2 + ' date=' + ok3 + ' class=' + okC + ' quota=' + okQ);
     if (!(ok1 && ok2 && ok3 && okQ)) { await sleep(500); return; }
     var btn = await waitFor(function () { var b = buttonByText(document, /^(search|search trains|find trains)$/i); return b && enabled(b) ? b : null; }, 4000);
@@ -412,6 +496,12 @@
     var dateTile = dl && smallestWithText(card, function (t) { return t.indexOf(dl) === 0 && t.length < 80; });
     if (dateTile && !/selected|active|highlight/.test(dateTile.className || '') && !st.dateClicked) { mouseClick(dateTile); st.dateClicked = Date.now(); await sleep(350); }
 
+    if (j.checkOnly) {        // look only: report what IRCTC shows for this train / class / date and stop; never touches Book Now
+      st.checkAt = st.checkAt || Date.now();
+      if (Date.now() - Math.max(st.checkAt, st.dateClicked || 0, st.tileClicked || 0) < 900) { await sleep(150); return; }
+      var shown = dateTile ? txt(dateTile) : txt(card).replace(/\s+/g, ' ').slice(0, 300);
+      emit('availability', { text: shown, train: j.trainNo, cls: j.cls, date: j.date }); log('availability: ' + shown); RS.stop(); return;
+    }
     var openNow = !o || now() >= o - 120;
     if (dateTile && openNow && /regret|not available|train departed|charting|no seats|\bwl\b/i.test(txt(dateTile)) && !/\bavl|available\s*-?\d|\bcnf/i.test(txt(dateTile)) && st.wi < W.length - 1) {
       st.wi++; st.tileClicked = 0; st.dateClicked = 0; st.noClass = 0; st.noTrain = 0; var nx = W[st.wi];
@@ -562,6 +652,9 @@
         if (Date.now() - st.otherSince > (s === 'blocked' ? 2500 : 25000) && Date.now() - (st.stuckAt || 0) > 8000) { st.stuckAt = Date.now(); emit(s === 'blocked' ? 'blocked' : 'stuck', { url: location.href }); log(s + ' page for a while'); }
       } else st.otherSince = 0;
       if (s !== RS.stage) { var tn = Date.now(); log('stage -> ' + s + (RS.stageAt ? ' (' + (tn - RS.stageAt) + 'ms in ' + RS.stage + ')' : '')); RS.stageAt = tn; RS.stage = s; emit('stage', { stage: s, url: location.pathname }); }
+      if ((s === 'dialog' || s === 'search' || s === 'other') && dismissLanguage()) { await sleep(350); busy = false; return; }
+      if (s !== st.dumpStage && RS.stageAt && Date.now() - RS.stageAt > 2500) { st.dumpStage = s; dumpDom('stage ' + s); }
+      if (RS.stageAt && Date.now() - RS.stageAt > 12000 && Date.now() - (st.diagAt || 0) > 12000 && !st.armedAt) { st.diagAt = Date.now(); log('where: ' + snap()); if ((RS.dumps || 0) < 14 && Date.now() - (st.dumpAt || 0) > 40000) { st.dumpAt = Date.now(); dumpDom('stuck'); } }
       if (s === 'confirmed') onConfirmed();
       else if (s === 'error') await onError();
       else if (s === 'dialog') await onDialog();
@@ -577,6 +670,7 @@
   }
 
   RS.start = function (job) {
+    try { var mv = document.querySelector('meta[name=viewport]'); if (!mv) { mv = document.createElement('meta'); mv.setAttribute('name', 'viewport'); document.head.appendChild(mv); } mv.setAttribute('content', 'width=1100'); } catch (e) {}      // desktop layout on a phone screen
     RS.stop(); stopped = false; st = {}; secret = { user: job.username || '', pw: job.password || '' }; delete job.username; delete job.password; RS.job = job; RS.running = true; RS.events = [];
     timer = setInterval(tick, 120); emit('started', { trainNo: job.trainNo, date: job.date }); log('engine started');
     return 'started';

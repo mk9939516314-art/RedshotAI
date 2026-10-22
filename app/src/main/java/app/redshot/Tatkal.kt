@@ -59,10 +59,15 @@ object Tatkal {
     private val IST = TimeZone.getTimeZone("Asia/Kolkata")
     /** epoch ms when tatkal opens for this journey date (DD/MM/YYYY) and class; 0 = no waiting needed. */
     fun openAt(date: String, cls: String, quota: String, now: Long = System.currentTimeMillis()): Long {
-        if (quota.uppercase() !in setOf("TQ", "PT")) return 0          // only Tatkal / Premium Tatkal have a daily opening moment
         val f = SimpleDateFormat("dd/MM/yyyy", Locale.US).apply { timeZone = IST; isLenient = false }
         val d = try { f.parse(date) } catch (e: Exception) { return 0 } ?: return 0
-        val c = Calendar.getInstance(IST).apply { time = d; add(Calendar.DAY_OF_MONTH, -1); set(Calendar.HOUR_OF_DAY, if (cls.uppercase() in setOf("SL", "2S")) 11 else 10); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+        val tatkal = quota.uppercase() in setOf("TQ", "PT")
+        val c = Calendar.getInstance(IST).apply {
+            time = d
+            if (tatkal) { add(Calendar.DAY_OF_MONTH, -1); set(Calendar.HOUR_OF_DAY, if (cls.uppercase() in setOf("SL", "2S")) 11 else 10) }
+            else { add(Calendar.DAY_OF_MONTH, -60); set(Calendar.HOUR_OF_DAY, 8) }     // advance booking (ARP 60 days) opens 08:00 IST
+            set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
         return if (c.timeInMillis > now) c.timeInMillis else 0
     }
 
@@ -84,8 +89,8 @@ object Tatkal {
         "tatkal_profile_get" -> describe(ctx)
         "tatkal_plan" -> {
             val t = openAt(a.optString("date"), a.optString("cls", "3A"), a.optString("quota", "TQ"))
-            if (t == 0L) "Booking abhi khuli hai ya GN hai: turant start ho sakta hai."
-            else { val f = SimpleDateFormat("dd MMM HH:mm:ss", Locale.US).apply { timeZone = IST }; "Tatkal khulega ${f.format(t)} IST (${(t - System.currentTimeMillis()) / 60000} min baad). openAtMs=$t" }
+            if (t == 0L) "Booking abhi khuli hai: turant start ho sakta hai."
+            else { val f = SimpleDateFormat("dd MMM HH:mm:ss", Locale.US).apply { timeZone = IST }; "Booking khulegi ${f.format(t)} IST (${(t - System.currentTimeMillis()) / 60000} min baad). openAtMs=$t" }
         }
         "tatkal_start" -> start(ctx, a)
         "tatkal_status" -> TatkalState.describe()
@@ -163,18 +168,20 @@ object Tatkal {
         if (from.first.isEmpty()) return "error: FROM station pakka nahi: ${from.third}. Owner se poochh."
         if (to.first.isEmpty()) return "error: TO station pakka nahi: ${to.third}. Owner se poochh."
         val cls = a.optString("cls", "SL").uppercase(); val quota = a.optString("quota", "TQ").uppercase()
-        val ps = if (a.has("passengers")) (a.get("passengers").let { if (it is JSONArray) it else try { JSONArray(it.toString()) } catch (e: Exception) { JSONArray() } }) else (p.optJSONArray("passengers") ?: JSONArray())
-        if (ps.length() == 0) return "error: passengers ka naam/umar/gender chahiye (tatkal_profile_set ya yaha do)"
-        if (p.optString("username").isBlank() || pw.isBlank()) return "error: IRCTC user id aur password chahiye (tatkal_profile_set)"
+        val chk = a.optBoolean("checkOnly", false)       // only look at availability: no login, no passengers, no booking
+        val ps0 = if (a.has("passengers")) (a.get("passengers").let { if (it is JSONArray) it else try { JSONArray(it.toString()) } catch (e: Exception) { JSONArray() } }) else (p.optJSONArray("passengers") ?: JSONArray())
+        val ps = if (chk && ps0.length() == 0) JSONArray().put(JSONObject().put("name", "CHECK").put("age", 30).put("gender", "M")) else ps0
+        if (!chk && ps.length() == 0) return "error: passengers ka naam/umar/gender chahiye (tatkal_profile_set ya yaha do)"
+        if (!chk && (p.optString("username").isBlank() || pw.isBlank())) return "error: IRCTC user id aur password chahiye (tatkal_profile_set)"
         val date = a.optString("date")
         validate(date, a.optString("trainNo").trim(), cls, quota, ps)?.let { return it }
-        val open = openAt(date, cls, quota)
+        val open = if (chk) 0L else openAt(date, cls, quota)
         val job = JSONObject()
             .put("from", from.first).put("fromName", from.second).put("to", to.first).put("toName", to.second).put("date", date)
             .put("trainNo", a.optString("trainNo")).put("cls", cls).put("quota", quota).put("passengers", ps)
             .put("mobile", a.optString("mobile").ifBlank { p.optString("mobile") })
             .put("autoUpgrade", a.optBoolean("autoUpgrade", p.optBoolean("autoUpgrade", false)))
-            .put("confirmOnly", a.optBoolean("confirmOnly", false))
+            .put("confirmOnly", a.optBoolean("confirmOnly", false)).put("checkOnly", chk)
             .put("payMode", a.optString("payMode").ifBlank { p.optString("payMode", "ewallet") })
             .put("autoWalletConfirm", p.optBoolean("autoWalletConfirm", false))
             .put("clsFallback", list(a.opt("clsFallback"))).put("altTrains", list(a.opt("altTrains")))

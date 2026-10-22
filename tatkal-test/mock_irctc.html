@@ -186,6 +186,10 @@ function render(){
   else if (p.includes('ewallet-confirm')) pageWallet(); else if (p.includes('bkgpaymentoptions')) pagePayment(); else if (p.includes('bookingconfirm')) pageDone(); else if (p.includes('denied')) $app.innerHTML = '<h1>Access Denied</h1><p>You don\'t have permission to access this server. Reference #18.2f4a1b</p>'; else pageSearch();
 }
 render();
+if (new URLSearchParams(location.search).get('lang')) { const d = document.createElement('div'); d.className='keep'; d.style.cssText='position:fixed;inset:0;background:#fff;z-index:99'; d.innerHTML = '<h3>Select Language</h3><div class="opt"><span>English</span></div><div class="opt"><span>\u0939\u093f\u0928\u094d\u0926\u0940</span> <span>Hindi</span></div>'; document.body.appendChild(d); d.querySelector('.opt span').addEventListener('click', () => d.remove()); }
+if (new URLSearchParams(location.search).get('renamed')) { setTimeout(() => { document.querySelectorAll('[formcontrolname]').forEach(x => x.removeAttribute('formcontrolname')); const j = document.getElementById('jDate'); if (j) j.removeAttribute('id'); }, 0); }
+if (new URLSearchParams(location.search).get('deadpopup')) { const d = document.createElement('div'); d.setAttribute('role','dialog'); d.className='keep'; d.innerHTML = '<h4>Welcome</h4><p>Please wait while we load your offers</p>'; document.body.appendChild(d); }
+if (new URLSearchParams(location.search).get('chat')) { const d = document.createElement('div'); d.setAttribute('role','dialog'); d.id='disha-chat'; d.className='keep'; d.innerHTML = '<p>Ask DISHA 2.0 how can I help you</p><input placeholder="type here">'; document.body.appendChild(d); }
 if (new URLSearchParams(location.search).get('notice')) showDialog('Confirmation', 'Only Aadhaar-verified users can book tatkal tickets; to skip this information and proceed, press the Enter key.', 'OK');
 </script></body></html>
 

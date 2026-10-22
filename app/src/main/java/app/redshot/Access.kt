@@ -40,9 +40,15 @@ object Access {
         "email_send" -> emailSend(ctx, a.optString("to"), a.optString("subject"), a.optString("body"))
         "calendar_add" -> calendarAdd(ctx, a.optString("title"), a.optString("start"), a.optInt("minutes", 60))
         "set_away" -> {
-            if (a.optBoolean("off")) { AwayMode.clear(); "ok: away mode band" }
+            if (a.optBoolean("off")) {
+                AwayMode.clear()
+                val rep = AwayLog.drain()
+                "ok: away mode band. " + (if (rep.isBlank()) "AWAY LOG: kuch nahi hua, sab shaant raha." else "AWAY LOG (owner ko ye dosti ki zubaan me bata):\n$rep")
+            }
             else { AwayMode.set(a.optString("note").ifBlank { "owner abhi available nahi hai" }, a.optInt("minutes", 180)); "ok: away mode chalu: " + AwayMode.describe() }
         }
+        "class_scan" -> ClassScan.run(ctx, a.optString("app").ifBlank { "Allen" }, "owner")
+        "away_report" -> AwayLog.peek().ifBlank { "abhi tak kuch nahi hua, sab shaant hai" } + (if (AwayMode.active) "\n(away mode chalu: " + AwayMode.describe() + ")" else "")
         "reply_notification" -> RedshotNotifs.replyTo(a.optString("to"), a.optString("text"))
         "recent_actions" -> ActionLog.recent(a.optInt("count", 15).coerceIn(1, 40))
         "list_apps" -> Apps.list(ctx).joinToString(", ") { it.label }.take(3000)

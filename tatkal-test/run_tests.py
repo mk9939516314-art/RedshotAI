@@ -146,11 +146,26 @@ try:
 
     # 16) Access Denied page is recognised
     r = run('denied', url='/nget/denied', until=('blocked', 'error'), timeout=30)
+    check('page map is reported for diagnosis', any((x or '').startswith('dom[') for x in r['elog']), r['elog'][:6])
     check('Access Denied page is reported as blocked', r['outcome'] and r['outcome'][0] == 'blocked', (r['outcome'], r['elog'][-3:]))
     # 17) IRCTC keeps refusing (quota not available): stops instead of spamming
     r = run('refuse', job_over=dict(payMode='manual'), mock=dict(failBookClicks=0, refuse=True), open_in_ms=1500, until=('payment_ready', 'error'), timeout=120)
     check('repeated refusal ends as an honest error', r['outcome'] and r['outcome'][0] == 'error' and 'quota' in r['outcome'][1].get('msg', '').lower(), (r['outcome'], r['elog'][-4:]))
     check('it did not spam Book Now forever', r['mock']['bookClicks'] <= 14, r['mock'])
+    # 18) a popup nobody can close, and a chat widget in role=dialog, must not freeze the engine
+    r = run('deadpopup', url='/nget/train-search?deadpopup=1', mock=dict(failBookClicks=0), job_over=dict(payMode='manual'), until=('payment_ready', 'error'), timeout=90)
+    check('popup without any button does not freeze the engine', r['outcome'] and r['outcome'][0] == 'payment_ready', (r['outcome'], r['elog'][:10]))
+    check('that popup is reported in the log', any('popup without a button' in (x or '') for x in r['elog']), r['elog'][:10])
+    r = run('chatwidget', url='/nget/train-search?chat=1', mock=dict(failBookClicks=0), job_over=dict(payMode='manual'), until=('payment_ready', 'error'), timeout=90)
+    check('chat widget in a dialog role is ignored', r['outcome'] and r['outcome'][0] == 'payment_ready', (r['outcome'], r['elog'][:10]))
+    # 20) language chooser made of plain spans (not a dialog, not a button) is answered with English; renamed form fields still found
+    r = run('lang', url='/nget/train-search?lang=1', mock=dict(failBookClicks=0), job_over=dict(payMode='manual'), until=('payment_ready', 'error'), timeout=90)
+    check('English/Hindi chooser is dismissed by the engine', r['outcome'] and r['outcome'][0] == 'payment_ready' and any('language popup' in (x or '') for x in r['elog']), (r['outcome'], r['elog'][:8]))
+    r = run('renamed', url='/nget/train-search?renamed=1', mock=dict(failBookClicks=0), job_over=dict(payMode='manual'), until=('payment_ready', 'error'), timeout=90)
+    check('form without ids / formcontrolnames is still filled', r['outcome'] and r['outcome'][0] == 'payment_ready', (r['outcome'], r['elog'][:10]))
+    # 19) check-only: reports availability, never books
+    r = run('checkonly', job_over=dict(checkOnly=True, username='', password='', quota='GN'), mock=dict(failBookClicks=0), open_in_ms=1, until=('availability', 'error', 'payment_ready'), timeout=60)
+    check('check-only reports availability and does not book', r['outcome'] and r['outcome'][0] == 'availability' and r['mock']['bookClicks'] in (0, None), (r['outcome'], r['mock'], r['elog'][-4:]))
 finally:
     srv.terminate()
 

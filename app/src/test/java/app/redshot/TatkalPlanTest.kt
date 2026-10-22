@@ -29,6 +29,10 @@ class TatkalPlanTest {
         assertEquals(0L, Tatkal.openAt("21/10/2026", "SL", "LD", ms("2026-10-01 00:00:00")))
         assertEquals(0L, Tatkal.openAt("bad", "SL", "TQ"))
     }
+    @Test fun advanceBookingOpensAt8SixtyDaysBefore() {
+        assertEquals(ms("2026-10-24 08:00:00"), Tatkal.openAt("23/12/2026", "SL", "GN", ms("2026-10-21 08:00:00")))
+        assertEquals(0L, Tatkal.openAt("23/12/2026", "SL", "GN", ms("2026-10-24 08:00:01")))
+    }
     @Test fun validationCatchesProblemsBeforeTheyHurt() {
         val now = ms("2026-10-19 09:00:00")
         assertNull(Tatkal.validate("20/10/2026", "15273", "SL", "TQ", pax("A"), now))

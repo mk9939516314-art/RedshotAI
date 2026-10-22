@@ -49,3 +49,33 @@ object AwayMode {
         return "$note (abhi se lagbhag $left minute tak)"
     }
 }
+
+/** What Redshot handled while the owner was away: who wrote, what it answered, what changed. Read out when the owner is back. */
+object AwayLog {
+    private const val P = "awaylog"
+    private val lines = ArrayList<String>()
+    private var ctx: android.content.Context? = null
+    private const val SEP = "\u0001"
+
+    @Synchronized fun load(c: android.content.Context) {
+        ctx = c.applicationContext
+        val raw = c.getSharedPreferences(P, android.content.Context.MODE_PRIVATE).getString("l", "") ?: ""
+        lines.clear(); if (raw.isNotEmpty()) lines.addAll(raw.split(SEP))
+    }
+
+    private fun save() { ctx?.getSharedPreferences(P, android.content.Context.MODE_PRIVATE)?.edit()?.putString("l", lines.joinToString(SEP))?.apply() }
+
+    @Synchronized fun add(s: String, at: Long = System.currentTimeMillis()) {
+        if (s.isBlank()) return
+        val t = java.text.SimpleDateFormat("h:mm a", java.util.Locale.ENGLISH).format(java.util.Date(at))
+        val line = "$t ${s.replace('\n', ' ').trim().take(240)}"
+        if (lines.lastOrNull() == line) return
+        lines.add(line)
+        while (lines.size > 80) lines.removeAt(0)
+        save()
+    }
+
+    @Synchronized fun peek(): String = lines.joinToString("\n")
+    @Synchronized fun size(): Int = lines.size
+    @Synchronized fun drain(): String { val r = lines.joinToString("\n"); lines.clear(); save(); return r }
+}

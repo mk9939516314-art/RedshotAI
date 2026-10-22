@@ -54,6 +54,8 @@ class RedshotService : Service() {
         /** Tatkal screen -> owner: say it with the live voice, and keep a trail in the brain log. */
         fun tatkalSay(text: String) { instance?.let { i -> Thread { if (!i.speakViaLive(text)) i.speaker?.say(text, "hi-IN") }.start() } }
         fun tatkalLog(content: String) { instance?.log("tatkal", content) }
+        fun classReminders(list: List<Pair<Long, String>>) { instance?.scheduleClassReminders(list) }
+        fun classChanged(changes: List<String>) { instance?.classChangedEvent(changes) }
         val enrolling: Boolean get() = (instance?.ear?.enrollWanted ?: 0) > 0
 
         private val SERVER_TOOLS = setOf("web_fetch", "calculate", "utility", "currency_rate", "weather", "geocode", "ip_lookup", "stock_quote", "image_generate", "url_safety", "translate_text", "deep_think")
@@ -135,6 +137,14 @@ class RedshotService : Service() {
         AutoScroll.appCtx = applicationContext
         Voiceprint.load(this)
         AwayMode.load(this)
+        AwayLog.load(this)
+        try {
+            val rx = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) { bg.schedule(Runnable { classScanIfDue("unlock") }, 6, TimeUnit.SECONDS) }
+            }
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(rx, android.content.IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
+            else registerReceiver(rx, android.content.IntentFilter(Intent.ACTION_USER_PRESENT))
+        } catch (e: Exception) {}
         RedshotNotifs.appCtx = applicationContext
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -329,6 +339,10 @@ class RedshotService : Service() {
         val sb = StringBuilder()
         sb.append("\n\nABHI KA SAMAY: ").append(java.text.SimpleDateFormat("EEEE d MMMM yyyy, h:mm a", java.util.Locale.ENGLISH).format(java.util.Date())).append(" IST")
         if (AwayMode.active) sb.append("\nAWAY MODE CHALU: ").append(AwayMode.describe())
+        if (AwayLog.size() > 0) {
+            if (AwayMode.active) sb.append("\nAWAY LOG ABHI TAK (owner pooche 'kya hua' toh yahi bata):\n").append(AwayLog.peek())
+            else sb.append("\nOWNER KE PICHHLE AWAY ME YE HUA (owner se baat shuru hote hi dosti ki zubaan me saaf-saaf bata de, phir ye khatam):\n").append(AwayLog.drain())
+        }
         sb.append("\nPHONE/REDSHOT NE ABHI TAK YE KIYA (sab dimaag milake, ye tera hi kiya hua hai, mana mat kar):\n").append(ActionLog.recent(12))
         if (convoLog.isNotEmpty() && System.currentTimeMillis() - lastLiveEndAt < 3 * 60_000L)
             sb.append("\nABHI KI PICHHLI BAAT-CHEET (isi ka silsila):\n").append(convoLog.toString().takeLast(900))
@@ -657,6 +671,45 @@ class RedshotService : Service() {
         }
     }
 
+    private val classTasks = ArrayList<java.util.concurrent.ScheduledFuture<*>>()
+
+    internal fun classScanIfDue(why: String) {
+        try {
+            val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            if (muted || !ClassScan.due(this, h, AwayMode.active)) return
+            Thread {
+                try { val r = ClassScan.run(this, "Allen", why); log("classscan", why + ": " + r.take(400)) } catch (e: Exception) {}
+            }.also { it.isDaemon = true }.start()
+        } catch (e: Exception) {}
+    }
+
+    internal fun scheduleClassReminders(list: List<Pair<Long, String>>) {
+        synchronized(classTasks) {
+            classTasks.forEach { it.cancel(false) }; classTasks.clear()
+            for ((at, say) in list) {
+                val d = at - System.currentTimeMillis()
+                if (d > 0) classTasks.add(bg.schedule(Runnable { classRemind(say) }, d, TimeUnit.MILLISECONDS))
+            }
+        }
+        ActionLog.add("(khud se) class reminders lage: " + list.size)
+    }
+
+    private fun classRemind(say: String) {
+        ActionLog.add("(khud se) class reminder: " + say.take(80))
+        if (AwayMode.active) AwayLog.add("class reminder: " + say)
+        val spoke = !muted && speakViaLive(say)
+        if (!spoke && !muted) speaker?.say(say, "hi-IN")
+        Executor.notify(this, say)
+    }
+
+    internal fun classChangedEvent(changes: List<String>) {
+        val t = "Class me badlav: " + changes.joinToString("; ")
+        ActionLog.add("(khud se) " + t.take(150))
+        AwayLog.add(t)
+        synchronized(mindEvents) { mindEvents.add(JSONObject().put("kind", "class_update").put("text", t.take(500))) }
+        scheduleMind(4_000)
+    }
+
     // ---------- proactive mind: sees notifications, hears owner's own talk, decides by itself ----------
 
     private fun mindAddSpeech(text: String) {
@@ -667,10 +720,20 @@ class RedshotService : Service() {
         if (mindKeys.containsMatchIn(text)) scheduleMind(6_000)
     }
 
+    private val keyTitle = LinkedHashMap<String, String>()
+
     private fun onNotification(n: RedshotNotifs.N) {
+        if (n.canReply) {
+            Convo.add(n.title, "them", n.text)
+            synchronized(keyTitle) { keyTitle[n.key] = n.title; while (keyTitle.size > 80) keyTitle.remove(keyTitle.keys.first()) }
+            if (AwayMode.active) AwayLog.add(n.title + " ne likha: " + n.text)
+        }
         synchronized(mindEvents) {
             val o = JSONObject().put("kind", "notif").put("pkg", n.pkg).put("text", (n.title + ": " + n.text).take(300))
-            if (n.canReply) o.put("key", n.key)
+            if (n.canReply) {
+                o.put("key", n.key).put("from", n.title.take(70))
+                o.put("thread", JSONArray(Convo.thread(n.title)))
+            }
             mindEvents.add(o)
             while (mindEvents.size > 30) mindEvents.removeAt(0)
         }
@@ -689,6 +752,7 @@ class RedshotService : Service() {
             if (muted) return
             val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             if (h < 6) return
+            if (ClassScan.due(this, h, AwayMode.active)) classScanIfDue("tick")
             val cal = Executor.calendar(this, 4)
             synchronized(mindEvents) {
                 if (!cal.startsWith("Calendar mein") && !cal.startsWith("error")) mindEvents.add(JSONObject().put("kind", "calendar").put("text", cal.take(500)))
@@ -714,7 +778,7 @@ class RedshotService : Service() {
                 .put("did", ActionLog.recent(8))
             if (AwayMode.active) body.put("away", AwayMode.describe())
             synchronized(told) { body.put("told", JSONArray(told.takeLast(8))) }
-            val r = Brain.post(this, "device/mind", body, 20000) ?: run { mindLast = "mind fail: " + Brain.lastError; return }
+            val r = Brain.post(this, "device/mind", body, 27000) ?: run { mindLast = "mind fail: " + Brain.lastError; return }
             val say = r.optString("say", "")
             val note = r.optString("notify", "")
             val acts = r.optJSONArray("actions")
@@ -723,11 +787,17 @@ class RedshotService : Service() {
                 val a = acts.optJSONObject(i) ?: continue
                 val res = Executor.run(this, a)
                 ActionLog.add("(khud se) " + a.toString().take(150) + " -> " + (res ?: "ok"))
+                if (a.optString("type") == "reply" && res == null) {
+                    val who = synchronized(keyTitle) { keyTitle[a.optString("key")] } ?: "kisi"
+                    Convo.add(who, "me", a.optString("text"))
+                    AwayLog.add(who + " ko jawab diya: " + a.optString("text"))
+                }
             }
             val msg = if (say.isNotBlank()) say else note
             if (msg.isNotBlank()) {
                 synchronized(told) { if (told.contains(msg)) return; told.add(msg); while (told.size > 20) told.removeAt(0) }
                 ActionLog.add("(khud se) owner ko bataya: " + msg.take(120))
+                if (AwayMode.active) AwayLog.add("zaroori: " + msg)
                 val canTalk = say.isNotBlank() && !muted && System.currentTimeMillis() - lastMindSay > 90_000L
                 if (canTalk) { lastMindSay = System.currentTimeMillis(); if (!speakViaLive(say)) speaker?.say(say, "hi-IN") }
                 else Executor.notify(this, msg)
