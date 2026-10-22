@@ -161,11 +161,38 @@
     return qsa('a, button, span, li').some(function (e) { return visible(e) && /^log\s*out$/i.test(txt(e)); });
   }
   // log in EARLY (owner only types the captcha); never wait for Book Now to discover we are logged out
+  function loginTrigger() {          // the LOGIN link may sit behind a menu / icon: find it by text, then by attributes, visible or not (a DOM click works on hidden links too)
+    var vis = qsa('a, button').filter(function (e) { return visible(e) && /^log\s*in$/i.test(txt(e)); })[0];
+    if (vis) return { el: vis, how: 'visible' };
+    var any = qsa('a, button, li, span, div').filter(function (e) { return /^log\s*in$/i.test(txt(e)) && e.children.length < 3 && !e.closest('p-dialog, [role="dialog"]'); })[0];
+    if (any) return { el: any.closest('a, button') || any, how: 'hidden' };
+    var attr = qsa('[aria-label*="login" i], [title*="login" i], [id*="login" i], [class*="login" i]').filter(function (e) {
+      return !e.closest('p-dialog, [role="dialog"], form') && !qs('input', e) && e.children.length < 4 && !/sign\s*in|logout|log out|register/i.test(txt(e));
+    })[0];
+    return attr ? { el: attr, how: 'attr' } : null;
+  }
+  function openMenu() {
+    var m = qsa('a, button, i, span, div').filter(function (e) {
+      return visible(e) && (/h_menu|menu_drop|hamburger|fa-align-justify|fa-bars|navbar-toggle|user|account/i.test((e.className && e.className.baseVal === undefined ? e.className : '') + ' ' + (e.id || '')) || /menu|account|user/i.test(e.getAttribute('aria-label') || ''));
+    })[0];
+    if (m) { mouseClick(m.closest('a, button') || m); return true; }
+    return false;
+  }
+  function headerHtml() {
+    var h = qs('app-header, header, .h_container, nav');
+    return h ? h.outerHTML.replace(/\s+/g, ' ').replace(/<(svg|path|img)[^>]*>/g, '').replace(/ (ng-[a-z0-9-]+|_ngcontent-[a-z0-9-]+)(="[^"]*")?/g, '') : '(no header element)';
+  }
+  // log in EARLY (owner only types the captcha, if IRCTC asks for one); never wait for Book Now to discover we are logged out
   function ensureLogin() {
     if (!secret.user || loggedIn() || loginDialog() || infoDialog() || errorDialog()) return;
     if (st.loginOpenedAt && Date.now() - st.loginOpenedAt < 6000) return;
-    var b = qsa('a, button').filter(function (e) { return visible(e) && /^log\s*in$/i.test(txt(e)); })[0];
-    if (b) { st.loginOpenedAt = Date.now(); mouseClick(b); log('login window opened early'); }
+    var t = loginTrigger();
+    if (t) { st.loginOpenedAt = Date.now(); mouseClick(t.el); log('login window opened early (' + t.how + ')'); return; }
+    if (Date.now() - (st.menuTried || 0) > 5000) {
+      st.menuTried = Date.now();
+      log('login link not found' + (openMenu() ? ', opened a menu' : ''));
+      if (!st.hdrDump) { st.hdrDump = 1; var h = headerHtml(); log('header[1/2] ' + h.slice(0, 900)); log('header[2/2] ' + h.slice(900, 1800)); }
+    }
   }
   function stage() {
     var p = path();
@@ -340,6 +367,42 @@
     return !!(await waitFor(function () { return input.value === f; }, 1500));
   }
 
+  // ---- what IRCTC answered: last calls and their status codes, kept for diagnosis
+  function netRec(u, code) {
+    u = String(u || ''); if (!/irctc|eticketing|\/nget\//i.test(u) && u.charAt(0) !== '/') return;
+    RS.net = RS.net || []; RS.net.push(new Date().toISOString().slice(11, 19) + ' ' + code + ' ' + u.replace(/^https?:\/\/[^/]+/, '').slice(0, 80)); if (RS.net.length > 14) RS.net.shift();
+  }
+  (function hookNet() {
+    try {
+      if (window.__rsNetHook) return; window.__rsNetHook = true;
+      var of = window.fetch;
+      if (of) window.fetch = function () { var a = arguments, u = a[0] && (a[0].url || a[0]); return of.apply(this, a).then(function (r) { netRec(u, r.status); return r; }, function (e) { netRec(u, 'ERR'); throw e; }); };
+      var ox = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (m, u) { var self = this; this.addEventListener('loadend', function () { netRec(u, self.status); }); return ox.apply(this, arguments); };
+    } catch (e) {}
+  })();
+  function formState() {
+    return ['origin', 'destination', 'journeyDate', 'journeyClass', 'journeyQuota'].map(function (n) {
+      var c = qs('[formcontrolname="' + n + '"]') || qs('#' + n); if (!c) return n + '=none';
+      var i = c.tagName === 'INPUT' ? c : qs('input', c);
+      return n + '=' + (/ng-invalid/.test(c.className) ? 'INVALID' : /ng-valid/.test(c.className) ? 'ok' : '?') + ':' + ((i && i.value) || txt(c)).slice(0, 22);
+    }).join(' | ');
+  }
+  function toastText() {
+    var a = qsa('p-toast, .ui-toast, .p-toast, [role="alert"], .ui-messages, .ui-toast-message, .alert, .error-message, .ui-state-error').filter(visible).map(function (e) { return txt(e).slice(0, 120); }).filter(Boolean);
+    var b = qsa('div, span, p, li').filter(function (e) { return visible(e) && e.children.length === 0 && /\b(invalid|please (select|enter|fill)|unable to|not allowed|try again|exceed|captcha)/i.test(txt(e)) && txt(e).length < 140; }).map(txt);
+    return a.concat(b).slice(0, 4).join(' || ');
+  }
+  function mouseClickAt(el) {
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+    var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (t) {
+      var ev; var o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: t.indexOf('up') >= 0 || t === 'click' ? 0 : 1, detail: 1 };
+      try { ev = t.indexOf('pointer') === 0 ? new PointerEvent(t, Object.assign({ pointerId: 1, pointerType: 'mouse', isPrimary: true }, o)) : new MouseEvent(t, o); } catch (e) { ev = new MouseEvent(t, o); }
+      el.dispatchEvent(ev);
+    });
+  }
+
   // ---------------------------------------------------------------- stages
   async function onDialog() {
     var dlg = infoDialog(); if (!dlg) return;
@@ -417,7 +480,7 @@
 
   async function onSearch() {
     var j = RS.job;
-    if (st.searchClicked && Date.now() - st.searchClicked < 15000) return;      // waiting for results
+    if (st.searchClicked && Date.now() - st.searchClicked < 7000) return;      // waiting for results
     if (!findField('origin')) {
       if (Date.now() - (st.noFormAt || 0) > 8000) { st.noFormAt = Date.now(); log('search form not on this page yet (' + path() + ')'); dumpDom('noform'); }
       return;
@@ -443,7 +506,18 @@
     log('search form: from=' + ok1 + ' to=' + ok2 + ' date=' + ok3 + ' class=' + okC + ' quota=' + okQ);
     if (!(ok1 && ok2 && ok3 && okQ)) { await sleep(500); return; }
     var btn = await waitFor(function () { var b = buttonByText(document, /^(search|search trains|find trains)$/i); return b && enabled(b) ? b : null; }, 4000);
-    if (btn) { st.searchClicked = Date.now(); safeClick(btn, 'search'); log('search clicked'); }
+    if (btn) {
+      st.searchClicked = Date.now(); var n = st.searchClicks = (st.searchClicks || 0) + 1;
+      log('form before search: ' + formState());
+      if (n === 1) safeClick(btn, 'search');
+      else {                                  // IRCTC ignored the first click: pointer events with coordinates, then a real form submit, then Enter
+        mouseClickAt(btn); await sleep(250);
+        var fm = btn.closest('form'); try { if (fm && fm.requestSubmit) fm.requestSubmit(); } catch (e) {}
+        if (n >= 3) { var di = findField('destination'); di = di && (di.tagName === 'INPUT' ? di : qs('input', di)); if (di) { di.focus(); ['keydown', 'keypress', 'keyup'].forEach(function (t) { di.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', keyCode: 13, which: 13, bubbles: true })); }); } }
+      }
+      log('search clicked #' + n);
+      setTimeout(function () { log('after search: path=' + path() + ' | ' + formState() + ' | toast=' + toastText() + ' | net=' + (RS.net || []).slice(-4).join(' ; ')); }, 2500);
+    }
   }
 
   function openAt() { return Number((RS.job && RS.job.openAtMs) || 0); }
@@ -670,7 +744,7 @@
   }
 
   RS.start = function (job) {
-    try { var mv = document.querySelector('meta[name=viewport]'); if (!mv) { mv = document.createElement('meta'); mv.setAttribute('name', 'viewport'); document.head.appendChild(mv); } mv.setAttribute('content', 'width=1100'); } catch (e) {}      // desktop layout on a phone screen
+    try { var mv = document.querySelector('meta[name=viewport]'); if (!mv) { mv = document.createElement('meta'); mv.setAttribute('name', 'viewport'); document.head.appendChild(mv); } mv.setAttribute('content', 'width=1366'); } catch (e) {}      // desktop layout on a phone screen
     RS.stop(); stopped = false; st = {}; secret = { user: job.username || '', pw: job.password || '' }; delete job.username; delete job.password; RS.job = job; RS.running = true; RS.events = [];
     timer = setInterval(tick, 120); emit('started', { trainNo: job.trainNo, date: job.date }); log('engine started');
     return 'started';
