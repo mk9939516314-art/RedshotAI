@@ -62,6 +62,19 @@ class TatkalActivity : Activity() {
     inner class Bridge {
         @JavascriptInterface fun skew(): String = skewMs.toString()
         @JavascriptInterface fun event(type: String, json: String) { runOnUiThread { onEvent(type, json) } }
+        // a REAL touch (isTrusted) for pages that ignore scripted clicks; x/y are CSS px in the viewport, vw = viewport width in CSS px
+        @JavascriptInterface fun tap(x: Double, y: Double, vw: Double) {
+            runOnUiThread {
+                try {
+                    val k = if (vw > 0) web.width / vw else 1.0
+                    val px = (x * k).toFloat(); val py = (y * k).toFloat()
+                    val t = android.os.SystemClock.uptimeMillis()
+                    val d = android.view.MotionEvent.obtain(t, t, android.view.MotionEvent.ACTION_DOWN, px, py, 0)
+                    val u = android.view.MotionEvent.obtain(t, t + 70, android.view.MotionEvent.ACTION_UP, px, py, 0)
+                    web.dispatchTouchEvent(d); ui.postDelayed({ web.dispatchTouchEvent(u); u.recycle() }, 70); d.recycle()
+                } catch (e: Exception) { RedshotService.tatkalLog("native tap failed: ${e.message}") }
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")

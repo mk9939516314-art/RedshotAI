@@ -162,9 +162,9 @@
   }
   // log in EARLY (owner only types the captcha); never wait for Book Now to discover we are logged out
   function loginTrigger() {          // the LOGIN link may sit behind a menu / icon: find it by text, then by attributes, visible or not (a DOM click works on hidden links too)
-    var vis = qsa('a, button').filter(function (e) { return visible(e) && /^log\s*in$/i.test(txt(e)); })[0];
+    var vis = qsa('a, button').filter(function (e) { return visible(e) && /^log\s*in(\s*\/\s*register)?$/i.test(txt(e)); })[0];
     if (vis) return { el: vis, how: 'visible' };
-    var any = qsa('a, button, li, span, div').filter(function (e) { return /^log\s*in$/i.test(txt(e)) && e.children.length < 3 && !e.closest('p-dialog, [role="dialog"]'); })[0];
+    var any = qsa('a, button, li, span, div').filter(function (e) { return /^log\s*in(\s*\/\s*register)?$/i.test(txt(e)) && e.children.length < 3 && !e.closest('p-dialog, [role="dialog"]'); })[0];
     if (any) return { el: any.closest('a, button') || any, how: 'hidden' };
     var attr = qsa('[aria-label*="login" i], [title*="login" i], [id*="login" i], [class*="login" i]').filter(function (e) {
       return !e.closest('p-dialog, [role="dialog"], form') && !qs('input', e) && e.children.length < 4 && !/sign\s*in|logout|log out|register/i.test(txt(e));
@@ -187,7 +187,7 @@
     if (!secret.user || loggedIn() || loginDialog() || infoDialog() || errorDialog()) return;
     if (st.loginOpenedAt && Date.now() - st.loginOpenedAt < 6000) return;
     var t = loginTrigger();
-    if (t) { st.loginOpenedAt = Date.now(); mouseClick(t.el); log('login window opened early (' + t.how + ')'); return; }
+    if (t) { st.loginOpenedAt = Date.now(); st.loginTries = (st.loginTries || 0) + 1; if (st.loginTries % 2 === 0 && nativeTap(t.el)) log('login: native tap'); else mouseClick(t.el); log('login window opened early (' + t.how + ') #' + st.loginTries); return; }
     if (Date.now() - (st.menuTried || 0) > 5000) {
       st.menuTried = Date.now();
       log('login link not found' + (openMenu() ? ', opened a menu' : ''));
@@ -393,6 +393,14 @@
     var b = qsa('div, span, p, li').filter(function (e) { return visible(e) && e.children.length === 0 && /\b(invalid|please (select|enter|fill)|unable to|not allowed|try again|exceed|captcha)/i.test(txt(e)) && txt(e).length < 140; }).map(txt);
     return a.concat(b).slice(0, 4).join(' || ');
   }
+  function nativeTap(el) {            // trusted touch from the app itself
+    try {
+      el.scrollIntoView({ block: 'center' });
+      var r = el.getBoundingClientRect();
+      if (window.RSBridge && RSBridge.tap) { RSBridge.tap(r.left + r.width / 2, r.top + r.height / 2, document.documentElement.clientWidth || window.innerWidth); return true; }
+    } catch (e) {}
+    return false;
+  }
   function mouseClickAt(el) {
     try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
     var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
@@ -510,6 +518,7 @@
       st.searchClicked = Date.now(); var n = st.searchClicks = (st.searchClicks || 0) + 1;
       log('form before search: ' + formState());
       if (n === 1) safeClick(btn, 'search');
+      else if (n === 2 && nativeTap(btn)) log('native tap on search');
       else {                                  // IRCTC ignored the first click: pointer events with coordinates, then a real form submit, then Enter
         mouseClickAt(btn); await sleep(250);
         var fm = btn.closest('form'); try { if (fm && fm.requestSubmit) fm.requestSubmit(); } catch (e) {}
