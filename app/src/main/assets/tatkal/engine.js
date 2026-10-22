@@ -540,6 +540,16 @@
     var j = RS.job;
     st.searchClicked = 0;
     ensureLogin();
+    if (!/^\d{5}$/.test(String(j.trainNo || ''))) {       // owner gave no train number: pick from what IRCTC lists (name hint first, e.g. "rajdhani"), the rest become fallbacks
+      var seen = [], names = {};
+      qsa('div, span, strong, h1, h2, h3, h4, a').forEach(function (e) { var t = txt(e), m = /^(.{2,60}?)\s*\((\d{5})\)$/.exec(t); if (m && !names[m[2]]) { names[m[2]] = m[1]; seen.push(m[2]); } });
+      if (!seen.length) { st.noTrain = (st.noTrain || 0) + 1; log('train list not loaded yet (' + st.noTrain + ')'); if (st.noTrain > 40) fail('no trains in the search results'); await sleep(300); return; }
+      var hint = String(j.trainName || '').toLowerCase().trim(), pref = hint ? seen.filter(function (n) { return names[n].toLowerCase().indexOf(hint) >= 0; }) : [];
+      if (hint && !pref.length) { fail('train "' + j.trainName + '" is not in the search results'); return; }
+      var order = pref.length ? pref.concat(seen.filter(function (n) { return pref.indexOf(n) < 0 && false; })) : seen;
+      j.trainNo = order[0]; j.altTrains = order.slice(1, 8); st.noTrain = 0;
+      log('no train number given: chose ' + names[order[0]] + ' (' + order[0] + '), ' + (order.length - 1) + ' fallbacks');
+    }
     var W = wants(); st.wi = st.wi || 0; var want = W[Math.min(st.wi, W.length - 1)]; j.trainNo = want.train; j.cls = want.cls;
     var card = await waitFor(function () {
       var title = smallestWithText(document, function (t) { return new RegExp('\\(' + j.trainNo + '\\)').test(t) && t.length < 120; });

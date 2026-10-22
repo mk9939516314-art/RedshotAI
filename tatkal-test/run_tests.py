@@ -166,6 +166,13 @@ try:
     # 19) check-only: reports availability, never books
     r = run('checkonly', job_over=dict(checkOnly=True, username='', password='', quota='GN'), mock=dict(failBookClicks=0), open_in_ms=1, until=('availability', 'error', 'payment_ready'), timeout=60)
     check('check-only reports availability and does not book', r['outcome'] and r['outcome'][0] == 'availability' and r['mock']['bookClicks'] in (0, None), (r['outcome'], r['mock'], r['elog'][-4:]))
+    # 21) no train number: engine picks from the list (by name hint, or the first one)
+    r = run('autoname', job_over=dict(trainNo='', trainName='satyagraha', payMode='manual'), mock=dict(failBookClicks=0), until=('payment_ready', 'error'), timeout=90)
+    check('blank train number + name hint books the named train', r['outcome'] and r['outcome'][0] == 'payment_ready' and any('15273' in (x or '') and 'chose' in (x or '') for x in r['elog']), (r['outcome'], r['elog'][:12]))
+    r = run('autoany', job_over=dict(trainNo='', payMode='manual'), mock=dict(failBookClicks=0), until=('payment_ready', 'error'), timeout=90)
+    check('blank train number alone picks the first listed train', r['outcome'] and r['outcome'][0] == 'payment_ready', (r['outcome'], r['elog'][:12]))
+    r = run('autobad', job_over=dict(trainNo='', trainName='rajdhani', payMode='manual'), mock=dict(failBookClicks=0), until=('payment_ready', 'error'), timeout=60)
+    check('unknown train name fails with a clear reason', r['outcome'] and r['outcome'][0] == 'error', (r['outcome'], r['elog'][-4:]))
 finally:
     srv.terminate()
 

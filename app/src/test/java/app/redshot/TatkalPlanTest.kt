@@ -38,6 +38,7 @@ class TatkalPlanTest {
         assertNull(Tatkal.validate("20/10/2026", "15273", "SL", "TQ", pax("A"), now))
         assertNotNull(Tatkal.validate("18/10/2026", "15273", "SL", "TQ", pax("A"), now))          // past
         assertNotNull(Tatkal.validate("20/10/2026", "1527", "SL", "TQ", pax("A"), now))           // train no
+        assertNull(Tatkal.validate("20/10/2026", "", "SL", "TQ", pax("A"), now))                  // blank = engine picks from the list
         assertNotNull(Tatkal.validate("20/10/2026", "15273", "XX", "TQ", pax("A"), now))          // class
         assertNotNull(Tatkal.validate("20/10/2026", "15273", "SL", "ZZ", pax("A"), now))          // quota
         assertNotNull(Tatkal.validate("20/10/2026", "15273", "SL", "TQ", pax("A", "B", "C", "D", "E"), now))   // tatkal max 4

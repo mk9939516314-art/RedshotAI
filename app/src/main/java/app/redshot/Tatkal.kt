@@ -130,7 +130,7 @@ object Tatkal {
 
     /** things that can only fail at the worst moment are rejected up front, in plain words */
     fun validate(date: String, trainNo: String, cls: String, quota: String, passengers: JSONArray, now: Long = System.currentTimeMillis()): String? {
-        if (!Regex("\\d{5}").matches(trainNo)) return "error: train number 5 digit ka chahiye (mila: '$trainNo')"
+        if (trainNo.isNotEmpty() && !Regex("\\d{5}").matches(trainNo)) return "error: train number 5 digit ka chahiye (mila: '$trainNo')"
         if (cls !in CLASSES) return "error: class '$cls' nahi pata (SL, 3A, 2A, 1A, CC, EC, 2S, 3E)"
         if (quota !in QUOTAS) return "error: quota '$quota' nahi pata (GN, TQ, PT, LD, SS...)"
         val f = SimpleDateFormat("dd/MM/yyyy", Locale.US).apply { timeZone = IST; isLenient = false }
@@ -178,7 +178,7 @@ object Tatkal {
         val open = if (chk) 0L else openAt(date, cls, quota)
         val job = JSONObject()
             .put("from", from.first).put("fromName", from.second).put("to", to.first).put("toName", to.second).put("date", date)
-            .put("trainNo", a.optString("trainNo")).put("cls", cls).put("quota", quota).put("passengers", ps)
+            .put("trainNo", a.optString("trainNo").trim()).put("trainName", a.optString("trainName").trim()).put("cls", cls).put("quota", quota).put("passengers", ps)
             .put("mobile", a.optString("mobile").ifBlank { p.optString("mobile") })
             .put("autoUpgrade", a.optBoolean("autoUpgrade", p.optBoolean("autoUpgrade", false)))
             .put("confirmOnly", a.optBoolean("confirmOnly", false)).put("checkOnly", chk)
