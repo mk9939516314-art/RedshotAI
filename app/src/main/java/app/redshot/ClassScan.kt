@@ -23,10 +23,6 @@ object ClassScan {
 
     fun doneToday(ctx: Context): Boolean = ctx.getSharedPreferences(P, Context.MODE_PRIVATE).getString("day", "") == today()
 
-    /** morning scan still missing (after 06:00), or, while the owner is away, the last one is older than 3 hours */
-    fun due(ctx: Context, hour: Int, away: Boolean, now: Long = System.currentTimeMillis()): Boolean =
-        !running && ((hour >= 6 && !doneToday(ctx)) || (away && now - lastAt > 3 * 3600_000L))
-
     private fun phoneReady(ctx: Context): String? {
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
         val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
@@ -39,7 +35,7 @@ object ClassScan {
             } catch (e: Throwable) {}
         }
         if (!pm.isInteractive) return "skip: screen band hai"
-        if (km.isKeyguardLocked) return "skip: phone locked hai, unlock hote hi dekh lunga"
+        if (km.isKeyguardLocked) return "skip: phone locked hai (owner bolega 'class check kar' tab dekhunga)"
         return null
     }
 

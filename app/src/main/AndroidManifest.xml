@@ -58,6 +58,7 @@
         </provider>
 
         <activity android:name=".TatkalSetupActivity" android:exported="false" />
+        <activity android:name=".ChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".TatkalActivity"
             android:exported="false"

@@ -138,13 +138,7 @@ class RedshotService : Service() {
         Voiceprint.load(this)
         AwayMode.load(this)
         AwayLog.load(this)
-        try {
-            val rx = object : android.content.BroadcastReceiver() {
-                override fun onReceive(c: Context, i: Intent) { bg.schedule(Runnable { classScanIfDue("unlock") }, 6, TimeUnit.SECONDS) }
-            }
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(rx, android.content.IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
-            else registerReceiver(rx, android.content.IntentFilter(Intent.ACTION_USER_PRESENT))
-        } catch (e: Exception) {}
+        scheduleScan04()
         RedshotNotifs.appCtx = applicationContext
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -172,6 +166,7 @@ class RedshotService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "app.redshot.SCAN04") { classScan04(intent.getIntExtra("try", 0)); scheduleScan04() }
         if (ear == null || ear?.running == false) startEar()
         return START_STICKY
     }
@@ -673,14 +668,32 @@ class RedshotService : Service() {
 
     private val classTasks = ArrayList<java.util.concurrent.ScheduledFuture<*>>()
 
-    internal fun classScanIfDue(why: String) {
+    /** The ONLY automatic class check: once a day around 04:00, while the owner is asleep. Never while he is using the phone. */
+    private fun classScan04(tryNo: Int) {
+        if (muted) return
+        Thread {
+            try {
+                val r = ClassScan.run(this, "Allen", "04:00")
+                log("classscan", "04:00 try $tryNo: " + r.take(400))
+                if (r.startsWith("skip") && tryNo < 4) {          // locked / screen off: try again in 30 min, but only inside the night window
+                    val at = System.currentTimeMillis() + 30 * 60_000L
+                    alarmAt(at, Intent(this, RedshotService::class.java).setAction("app.redshot.SCAN04").putExtra("try", tryNo + 1), 7703)
+                }
+            } catch (e: Exception) {}
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun alarmAt(at: Long, i: Intent, code: Int) {
         try {
-            val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-            if (muted || !ClassScan.due(this, h, AwayMode.active)) return
-            Thread {
-                try { val r = ClassScan.run(this, "Allen", why); log("classscan", why + ": " + r.take(400)) } catch (e: Exception) {}
-            }.also { it.isDaemon = true }.start()
-        } catch (e: Exception) {}
+            val pi = android.app.PendingIntent.getService(applicationContext, code, i, android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+            (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, pi)
+        } catch (e: Throwable) {}
+    }
+
+    internal fun scheduleScan04() {
+        val c = java.util.Calendar.getInstance().apply { set(java.util.Calendar.HOUR_OF_DAY, 4); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }
+        if (c.timeInMillis <= System.currentTimeMillis() + 60_000L) c.add(java.util.Calendar.DAY_OF_YEAR, 1)
+        alarmAt(c.timeInMillis, Intent(this, RedshotService::class.java).setAction("app.redshot.SCAN04"), 7702)
     }
 
     internal fun scheduleClassReminders(list: List<Pair<Long, String>>) {
@@ -752,7 +765,6 @@ class RedshotService : Service() {
             if (muted) return
             val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             if (h < 6) return
-            if (ClassScan.due(this, h, AwayMode.active)) classScanIfDue("tick")
             val cal = Executor.calendar(this, 4)
             synchronized(mindEvents) {
                 if (!cal.startsWith("Calendar mein") && !cal.startsWith("error")) mindEvents.add(JSONObject().put("kind", "calendar").put("text", cal.take(500)))

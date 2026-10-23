@@ -266,7 +266,7 @@ object Router {
                 return true
             }
         }
-        if ("lock" in ws && ("phone" in ws || "screen" in ws || ws.size <= 2)) {
+        if ("lock" in ws && ("phone" in ws || "screen" in ws) && ws.size <= 5) {
             act(ctx, say, JSONObject().put("type", "global").put("name", "lock"))
             return true
         }

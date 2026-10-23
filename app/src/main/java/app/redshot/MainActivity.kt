@@ -239,7 +239,13 @@ class MainActivity : Activity() {
             setPadding(dp(14), 0, dp(14), 0); minHeight = 0; minimumHeight = 0
             setOnClickListener { brainCheck() }
         }
-        row.addView(brainBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { topMargin = dp(14) })
+        row.addView(brainBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { topMargin = dp(14); rightMargin = dp(8) })
+        row.addView(Button(this).apply {
+            text = "Chat"; isAllCaps = false; textSize = 12f; setTextColor(TEXT)
+            background = bg(CARD, 19, Color.parseColor("#2A2A38"))
+            setPadding(dp(14), 0, dp(14), 0); minHeight = 0; minimumHeight = 0
+            setOnClickListener { startActivity(android.content.Intent(this@MainActivity, ChatActivity::class.java)) }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)).apply { topMargin = dp(14) })
         root.addView(row)
 
         details = tv("", 12f, MUTED).apply {
